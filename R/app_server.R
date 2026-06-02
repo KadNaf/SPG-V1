@@ -15,6 +15,5 @@ app_server <- function(input, output, session) {
   server_general_stats("general_stats", rv)
   server_LD("ld",                     rv)
   server_null_alleles("null_alleles", rv)
-  server_fst_ena("fst_ena", rv)
   server_isolation_by_distance("ibd", rv)
 }

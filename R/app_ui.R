@@ -1217,13 +1217,6 @@ app_ui <- function() {
       null_alleles_UI("null_alleles")
     ),
     bslib::nav_panel(
-      title = "FST-ENA",
-      icon  = shiny::icon("circle-notch"),
-      value = "fst_ena",
-      fst_ena_UI("fst_ena")
-    )
-    ,
-    bslib::nav_panel(
       title = HTML('IBD <span style="display:inline-block;font-size:0.65em;font-weight:700;color:#fff;background:#E1AF00;border-radius:3px;padding:1px 5px;vertical-align:middle;line-height:1.5;">🚧</span>'),
       icon  = shiny::icon("map-marker-alt"),
       value = "isolation_by_distance",
