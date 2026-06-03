@@ -9,9 +9,6 @@
 #' @importFrom waiter Waiter useWaiter
 #' @importFrom htmltools tags HTML tagList withTags
 #' @importFrom leaflet leafletOutput renderLeaflet leafletProxy
-#' @import future
-#' @import furrr
-#' @import purrr
 #' @importFrom DT DTOutput renderDT
 #' @importFrom plotly plotlyOutput renderPlotly ggplotly
 #' @importFrom utils combn

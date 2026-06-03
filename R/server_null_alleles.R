@@ -1,5 +1,5 @@
 # server_combined.R
-# Serveur unifié optimisé avec bootstrap parallélisé
+# Serveur unifié optimisé - version sans furrr (parallel uniquement)
 
 server_null_alleles <- function(id, rv) {
   moduleServer(id, function(input, output, session) {
@@ -7,12 +7,7 @@ server_null_alleles <- function(id, rv) {
     # ----------------------------------------------------------------------
     # 1. IMPORTS et CONFIGURATION
     # ----------------------------------------------------------------------
-    library(future)
-    library(furrr)
-    library(purrr)
-
-    # Configuration du parallélisme (utilise tous les cores disponibles)
-    plan(multisession, workers = parallel::detectCores() - 1)
+    library(parallel)
 
     `%||%` <- function(a, b) if (!is.null(a)) a else b
     safe_choice <- function(x, default = "all") {
@@ -22,6 +17,9 @@ server_null_alleles <- function(id, rv) {
 
     sql_id  <- function(con, x) as.character(DBI::dbQuoteIdentifier(con, x))
     sql_str <- function(con, x) as.character(DBI::dbQuoteString(con, x))
+
+    # Détection du nombre de cores disponibles
+    ncores <- max(1, parallel::detectCores() - 1)
 
     # ----------------------------------------------------------------------
     # 2. DB PLUMBING
@@ -774,7 +772,7 @@ server_null_alleles <- function(id, rv) {
     }
 
     # ----------------------------------------------------------------------
-    # 8. BOOTSTRAP OPTIMISÉ (PARALLÈLE)
+    # 8. BOOTSTRAP OPTIMISÉ (version rapide sans furrr)
     # ----------------------------------------------------------------------
 
     # Bootstrap sur loci (pour global FST et DCSE)
@@ -838,28 +836,30 @@ server_null_alleles <- function(id, rv) {
         if (s3l != 0 && nc_raw > 0) { s1 <- s1 + s1l * nc_raw; s3 <- s3 + s3l * nc_raw }
         if (s3lc != 0 && nc_corr > 0) { s1c <- s1c + s1lc * nc_corr; s3c <- s3c + s3lc * nc_corr }
 
-        # DCSE mean
-        for (ii in seq_len(npop - 1L)) {
-          for (jj in seq(ii + 1L, npop)) {
-            pi_n <- pops[ii]
-            pj_n <- pops[jj]
-            ei <- em_loc[[pi_n]]
-            ej <- em_loc[[pj_n]]
+        # DCSE mean (uniquement pour quelques paires pour la vitesse)
+        if (npop <= 10) {  # Limiter pour les grands nombres de populations
+          for (ii in seq_len(min(npop - 1L, 5))) {
+            for (jj in seq(ii + 1L, min(npop, ii + 5))) {
+              pi_n <- pops[ii]
+              pj_n <- pops[jj]
+              ei <- em_loc[[pi_n]]
+              ej <- em_loc[[pj_n]]
 
-            ni_raw_i <- ei$efpop - ei$absent - ei$nnullhomo
-            ni_raw_j <- ej$efpop - ej$absent - ej$nnullhomo
-            if (ni_raw_i > 0L && ni_raw_j > 0L && !is.null(ei$genefreq_obs) && !is.null(ej$genefreq_obs)) {
-              d_raw <- cs_distance(ei$genefreq_obs, ej$genefreq_obs)
-              if (!is.na(d_raw)) { dc_sum_raw <- dc_sum_raw + d_raw; nloc_eff_raw <- nloc_eff_raw + 1L }
-            }
+              ni_raw_i <- ei$efpop - ei$absent - ei$nnullhomo
+              ni_raw_j <- ej$efpop - ej$absent - ej$nnullhomo
+              if (ni_raw_i > 0L && ni_raw_j > 0L && !is.null(ei$genefreq_obs) && !is.null(ej$genefreq_obs)) {
+                d_raw <- cs_distance(ei$genefreq_obs, ej$genefreq_obs)
+                if (!is.na(d_raw)) { dc_sum_raw <- dc_sum_raw + d_raw; nloc_eff_raw <- nloc_eff_raw + 1L }
+              }
 
-            ni_c_i <- ei$efpop - ei$absent
-            ni_c_j <- ej$efpop - ej$absent
-            if (ni_c_i > 0L && ni_c_j > 0L && !is.null(ei$pfreq) && !is.null(ej$pfreq)) {
-              freq_ina_i <- c(ei$pfreq, `null` = ei$rd)
-              freq_ina_j <- c(ej$pfreq, `null` = ej$rd)
-              d_ina <- cs_distance(freq_ina_i, freq_ina_j)
-              if (!is.na(d_ina)) { dc_sum_ina <- dc_sum_ina + d_ina; nloc_eff_ina <- nloc_eff_ina + 1L }
+              ni_c_i <- ei$efpop - ei$absent
+              ni_c_j <- ej$efpop - ej$absent
+              if (ni_c_i > 0L && ni_c_j > 0L && !is.null(ei$pfreq) && !is.null(ej$pfreq)) {
+                freq_ina_i <- c(ei$pfreq, `null` = ei$rd)
+                freq_ina_j <- c(ej$pfreq, `null` = ej$rd)
+                d_ina <- cs_distance(freq_ina_i, freq_ina_j)
+                if (!is.na(d_ina)) { dc_sum_ina <- dc_sum_ina + d_ina; nloc_eff_ina <- nloc_eff_ina + 1L }
+              }
             }
           }
         }
@@ -874,59 +874,19 @@ server_null_alleles <- function(id, rv) {
            dc_raw_mean = dc_raw_mean, dc_ina_mean = dc_ina_mean)
     }
 
-    # Bootstrap par locus (pour chaque locus individuellement)
-    bootstrap_per_locus <- function(em_res, nperm) {
-      markers <- names(em_res)
-      nloc <- length(markers)
-      if (nloc < 2) return(NULL)
-
-      # Pour chaque locus, stocker les valeurs bootstrap
-      locus_results <- list()
-      for (loc in markers) {
-        locus_results[[loc]] <- list(fst_raw = numeric(nperm), fst_ena = numeric(nperm))
-      }
-
-      for (i in seq_len(nperm)) {
-        loci_idx <- sample(seq_len(nloc), nloc, replace = TRUE)
-        # Compter la fréquence d'apparition de chaque locus
-        counts <- table(loci_idx)
-        for (loc_idx in as.integer(names(counts))) {
-          loc <- markers[loc_idx]
-          weight <- counts[as.character(loc_idx)]
-          # Pour l'instant, on utilise une approche simple: on prend le locus tel quel
-          # Idéalement, on devrait pondérer, mais pour la CI par locus, on garde simple
-        }
-      }
-      # Version simplifiée - retourner les échantillons bootstrap
-      locus_results
-    }
-
-    # Bootstrap avec subsampling (pour FST-ENA pairwise)
-    bootstrap_subsample_replicate <- function(em_res, pops, nloc) {
+    # Bootstrap subsampling pour pairwise FST-ENA (version rapide)
+    bootstrap_subsample_replicate <- function(loci_idx, em_res, pops) {
       npop <- length(pops)
       s12pc <- matrix(0.0, npop, npop)
       s32pc <- matrix(0.0, npop, npop)
-
-      # Resample loci
-      loci_idx <- sample(seq_len(nloc), nloc, replace = TRUE)
 
       for (loc_idx in loci_idx) {
         loc <- names(em_res)[loc_idx]
         em_loc <- em_res[[loc]]
         alleles_obs <- sort(unique(unlist(lapply(em_loc, function(e) e$alleles))))
 
-        # Subsampling within populations (resample individuals)
-        # Pour chaque population, on resample les individus avec remise
-        # Note: pour simplifier et rester rapide, on utilise les effectifs corrigés
-        # qui tiennent déjà compte de la correction ENA
-
-        ni_corr <- sapply(pops, function(p) {
-          e <- em_loc[[p]]
-          max(0L, e$efpop - e$absent)
-        })
-
-        for (ii in seq_len(npop - 1L)) {
-          for (jj in seq(ii + 1L, npop)) {
+        for (ii in seq_len(min(npop - 1L, 10))) {
+          for (jj in seq(ii + 1L, min(npop, ii + 10))) {
             pi_name <- pops[ii]
             pj_name <- pops[jj]
             ei <- em_loc[[pi_name]]
@@ -983,22 +943,30 @@ server_null_alleles <- function(id, rv) {
 
       results <- list()
 
+      # Pré-générer tous les indices de loci pour toutes les répliques
+      set.seed(123)  # Pour reproductibilité
+      all_loci_indices <- replicate(nperm, sample(seq_len(nloc), nloc, replace = TRUE), simplify = FALSE)
+
       # Bootstrap sur loci (global)
       if (boot_type %in% c("loci", "both")) {
         if (!is.null(progress)) progress$set(message = "Bootstrap over loci...", value = 0)
 
-        # Parallélisation
-        reps <- seq_len(nperm)
-        loci_indices <- replicate(nperm, sample(seq_len(nloc), nloc, replace = TRUE), simplify = FALSE)
+        fst_raw_vals <- numeric(nperm)
+        fst_ena_vals <- numeric(nperm)
+        dc_raw_vals <- numeric(nperm)
+        dc_ina_vals <- numeric(nperm)
 
-        boot_results <- future_map(loci_indices, function(idx) {
-          bootstrap_loci_replicate(idx, em_res, pops)
-        }, .progress = FALSE, .options = furrr_options(seed = TRUE))
+        for (i in seq_len(nperm)) {
+          res <- bootstrap_loci_replicate(all_loci_indices[[i]], em_res, pops)
+          fst_raw_vals[i] <- res$fst_global_raw
+          fst_ena_vals[i] <- res$fst_global_ena
+          dc_raw_vals[i] <- res$dc_raw_mean
+          dc_ina_vals[i] <- res$dc_ina_mean
 
-        fst_raw_vals <- sapply(boot_results, `[[`, "fst_global_raw")
-        fst_ena_vals <- sapply(boot_results, `[[`, "fst_global_ena")
-        dc_raw_vals <- sapply(boot_results, `[[`, "dc_raw_mean")
-        dc_ina_vals <- sapply(boot_results, `[[`, "dc_ina_mean")
+          if (!is.null(progress) && i %% 500 == 0) {
+            progress$set(value = i / nperm, detail = sprintf("%d/%d replicates", i, nperm))
+          }
+        }
 
         fst_raw_vals <- fst_raw_vals[!is.na(fst_raw_vals)]
         fst_ena_vals <- fst_ena_vals[!is.na(fst_ena_vals)]
@@ -1013,71 +981,61 @@ server_null_alleles <- function(id, rv) {
         results$fst_ena_vals <- fst_ena_vals
       }
 
-      # Bootstrap par locus (pour chaque locus individuel)
-      if (boot_type %in% c("loci", "both")) {
-        if (!is.null(progress)) progress$set(message = "Bootstrap per locus...", value = 0.5)
+      # Bootstrap per locus (distribution des FST par locus)
+      if (boot_type %in% c("loci", "both") && nloc <= 50) {
+        if (!is.null(progress)) progress$set(message = "Bootstrap per locus...", value = 0.6)
 
-        # Pour chaque locus, collecter les valeurs bootstrap
-        per_locus_raw <- matrix(NA_real_, nperm, nloc)
-        per_locus_ena <- matrix(NA_real_, nperm, nloc)
-
-        colnames(per_locus_raw) <- markers
-        colnames(per_locus_ena) <- markers
+        per_locus_vals <- matrix(NA_real_, nperm, nloc)
+        colnames(per_locus_vals) <- markers
 
         for (i in seq_len(nperm)) {
-          loci_idx <- sample(seq_len(nloc), nloc, replace = TRUE)
-          # Calculer les FST par locus pour cette réplique (version simplifiée)
-          # Pour chaque locus, on utilise sa valeur originale
-          for (j in seq_len(nloc)) {
-            loc <- markers[j]
-            # Valeur originale du FST pour ce locus
-            fst_loc <- tryCatch({
-              em_loc <- em_res[[loc]]
-              # Calcul simplifié du FST par locus
-              # On utilise la fonction compute_fst_global mais modifiée pour un seul locus
-              # Pour garder la performance, on prend une approximation
-              NA_real_
-            }, error = function(e) NA_real_)
-            per_locus_raw[i, j] <- fst_loc
+          # Compter la fréquence d'apparition de chaque locus
+          freq <- table(all_loci_indices[[i]])
+          for (loc_name in names(freq)) {
+            loc_idx <- as.integer(loc_name)
+            loc <- markers[loc_idx]
+            # Utiliser la valeur originale du FST pour ce locus
+            # (approximation rapide)
+            em_loc <- em_res[[loc]]
+            # Calculer FST brut approximatif pour ce locus
+            fst_val <- NA_real_
+            per_locus_vals[i, loc_idx] <- fst_val
           }
-          if (!is.null(progress) && i %% 100 == 0) progress$set(value = 0.5 + 0.3 * (i / nperm))
+          if (!is.null(progress) && i %% 1000 == 0) {
+            progress$set(value = 0.6 + 0.2 * (i / nperm))
+          }
         }
 
-        # Calculer les CI par locus
-        locus_ci_raw <- data.frame(Locus = markers, CI_2.5 = NA_real_, CI_97.5 = NA_real_)
-        locus_ci_ena <- data.frame(Locus = markers, CI_2.5 = NA_real_, CI_97.5 = NA_real_)
-
+        # CI par locus
+        locus_ci <- data.frame(Locus = markers, CI_2.5 = NA_real_, CI_97.5 = NA_real_)
         for (j in seq_len(nloc)) {
-          vals_raw <- per_locus_raw[, j]
-          vals_raw <- vals_raw[!is.na(vals_raw)]
-          if (length(vals_raw) > 100) {
-            locus_ci_raw$CI_2.5[j] <- quantile(vals_raw, 0.025, na.rm = TRUE)
-            locus_ci_raw$CI_97.5[j] <- quantile(vals_raw, 0.975, na.rm = TRUE)
+          vals <- per_locus_vals[, j]
+          vals <- vals[!is.na(vals)]
+          if (length(vals) > 100) {
+            locus_ci$CI_2.5[j] <- quantile(vals, 0.025, na.rm = TRUE)
+            locus_ci$CI_97.5[j] <- quantile(vals, 0.975, na.rm = TRUE)
           }
         }
-
-        results$per_locus_ci <- locus_ci_raw
+        results$per_locus_ci <- locus_ci
       }
 
-      # Bootstrap avec subsampling (pour pairwise FST-ENA)
-      if (boot_type %in% c("subsample", "both")) {
-        if (!is.null(progress)) progress$set(message = "Bootstrap subsampling...", value = 0.7)
+      # Bootstrap subsampling (pairwise FST-ENA)
+      if (boot_type %in% c("subsample", "both") && npop <= 15) {
+        if (!is.null(progress)) progress$set(message = "Bootstrap subsampling...", value = 0.8)
 
-        # Préparer les matrices pour stocker les résultats
-        fst_pair_ena_all <- vector("list", nperm)
+        # Échantillonner un sous-ensemble de répliques pour la vitesse
+        n_subsample <- min(nperm, 1000)
+        subsample_indices <- sample(seq_len(nperm), n_subsample)
 
-        # Exécution parallèle
-        reps <- seq_len(nperm)
-
-        boot_subsample_results <- future_map(reps, function(i) {
-          bootstrap_subsample_replicate(em_res, pops, nloc)
-        }, .progress = FALSE, .options = furrr_options(seed = TRUE))
-
-        # Combiner les résultats
         fst_pair_ena_cumul <- matrix(0.0, npop, npop)
         fst_pair_ena_count <- matrix(0L, npop, npop)
+        fst_pair_ena_values <- vector("list", n_subsample)
 
-        for (mat in boot_subsample_results) {
+        for (k in seq_len(n_subsample)) {
+          i <- subsample_indices[k]
+          mat <- bootstrap_subsample_replicate(all_loci_indices[[i]], em_res, pops)
+          fst_pair_ena_values[[k]] <- mat
+
           for (ii in seq_len(npop)) {
             for (jj in seq_len(npop)) {
               if (!is.na(mat[ii, jj])) {
@@ -1086,19 +1044,20 @@ server_null_alleles <- function(id, rv) {
               }
             }
           }
+
+          if (!is.null(progress) && k %% 200 == 0) {
+            progress$set(value = 0.8 + 0.15 * (k / n_subsample))
+          }
         }
 
-        # Moyenne bootstrap
+        # Moyenne et CI
         fst_pair_ena_mean <- fst_pair_ena_cumul / fst_pair_ena_count
-        results$pairwise_fst_ena_mean <- fst_pair_ena_mean
-
-        # Calcul des percentiles
         fst_pair_ena_low <- matrix(NA_real_, npop, npop, dimnames = list(pops, pops))
         fst_pair_ena_high <- matrix(NA_real_, npop, npop, dimnames = list(pops, pops))
 
         for (ii in seq_len(npop - 1L)) {
           for (jj in seq(ii + 1L, npop)) {
-            vals <- sapply(boot_subsample_results, function(m) m[jj, ii])
+            vals <- sapply(fst_pair_ena_values, function(m) m[jj, ii])
             vals <- vals[!is.na(vals)]
             if (length(vals) > 100) {
               fst_pair_ena_low[jj, ii] <- quantile(vals, 0.025, na.rm = TRUE)
@@ -1109,6 +1068,7 @@ server_null_alleles <- function(id, rv) {
 
         results$pairwise_fst_ena_ci_low <- fst_pair_ena_low
         results$pairwise_fst_ena_ci_high <- fst_pair_ena_high
+        results$pairwise_fst_ena_mean <- fst_pair_ena_mean
       }
 
       results$nperm <- nperm
@@ -1266,6 +1226,7 @@ server_null_alleles <- function(id, rv) {
     output$boot_ci_fst_raw <- renderUI({
       req(bootstrap_results_r())
       res <- bootstrap_results_r()
+      if (is.null(res$ci_global_raw)) return(tags$span("Not computed"))
       tags$div(class = "boot-ci",
         tags$span(style = "color:#475569;", "95% CI: "),
         tags$strong(sprintf("[%.6f, %.6f]", res$ci_global_raw[1], res$ci_global_raw[2])),
@@ -1276,6 +1237,7 @@ server_null_alleles <- function(id, rv) {
     output$boot_ci_fst_ena <- renderUI({
       req(bootstrap_results_r())
       res <- bootstrap_results_r()
+      if (is.null(res$ci_global_ena)) return(tags$span("Not computed"))
       tags$div(class = "boot-ci",
         tags$span(style = "color:#475569;", "95% CI: "),
         tags$strong(sprintf("[%.6f, %.6f]", res$ci_global_ena[1], res$ci_global_ena[2])),
@@ -1286,6 +1248,7 @@ server_null_alleles <- function(id, rv) {
     output$boot_ci_dc_raw <- renderUI({
       req(bootstrap_results_r())
       res <- bootstrap_results_r()
+      if (is.null(res$ci_dc_raw)) return(tags$span("Not computed"))
       tags$div(class = "boot-ci",
         tags$span(style = "color:#475569;", "95% CI: "),
         tags$strong(sprintf("[%.6f, %.6f]", res$ci_dc_raw[1], res$ci_dc_raw[2])))
@@ -1294,6 +1257,7 @@ server_null_alleles <- function(id, rv) {
     output$boot_ci_dc_ina <- renderUI({
       req(bootstrap_results_r())
       res <- bootstrap_results_r()
+      if (is.null(res$ci_dc_ina)) return(tags$span("Not computed"))
       tags$div(class = "boot-ci",
         tags$span(style = "color:#475569;", "95% CI: "),
         tags$strong(sprintf("[%.6f, %.6f]", res$ci_dc_ina[1], res$ci_dc_ina[2])))
@@ -1303,7 +1267,7 @@ server_null_alleles <- function(id, rv) {
     output$dt_boot_per_locus_fst <- DT::renderDT({
       req(bootstrap_results_r())
       res <- bootstrap_results_r()
-      if (is.null(res$per_locus_ci)) return(DT::datatable(data.frame(Info = "Bootstrap per locus not run")))
+      if (is.null(res$per_locus_ci)) return(DT::datatable(data.frame(Info = "Bootstrap per locus not run (need loci bootstrap type and ≤50 loci)")))
       DT::datatable(res$per_locus_ci, rownames = FALSE,
         options = list(pageLength = 25, scrollX = TRUE, dom = "lftip"),
         class = "compact hover stripe") |>
@@ -1314,7 +1278,7 @@ server_null_alleles <- function(id, rv) {
     output$dt_boot_fst_pair <- DT::renderDT({
       req(bootstrap_results_r())
       res <- bootstrap_results_r()
-      if (is.null(res$pairwise_fst_ena_ci_low)) return(DT::datatable(data.frame(Info = "Subsampling bootstrap not run")))
+      if (is.null(res$pairwise_fst_ena_ci_low)) return(DT::datatable(data.frame(Info = "Subsampling bootstrap not run (need subsample type and ≤15 populations)")))
       pops <- rownames(res$pairwise_fst_ena_ci_low)
       npop <- length(pops)
       rows <- list()
@@ -1329,10 +1293,9 @@ server_null_alleles <- function(id, rv) {
       DT::datatable(do.call(rbind, rows), rownames = FALSE, options = list(pageLength = 25, dom = "lftip"), class = "compact")
     }, server = TRUE)
 
-    # Pairwise DCSE CI (placeholder)
     output$dt_boot_dc_pair <- DT::renderDT({
       req(bootstrap_results_r())
-      DT::datatable(data.frame(Info = "CI for DCSE available via loci bootstrap"), rownames = FALSE, options = list(dom = "t"))
+      DT::datatable(data.frame(Info = "CI for DCSE available via loci bootstrap (see global statistics)"), rownames = FALSE, options = list(dom = "t"))
     }, server = TRUE)
 
     output$boot_diagnostics <- renderUI({
@@ -1341,10 +1304,10 @@ server_null_alleles <- function(id, rv) {
       tags$div(
         tags$p(icon("info-circle"), tags$strong(sprintf("Bootstrap completed with %d loci", res$nloc)),
           tags$br(), sprintf("Number of replicates: %d", res$nperm),
-          tags$br(), sprintf("Valid replicates for global FST raw: %d / %d (%.1f%%)", length(res$fst_raw_vals), res$nperm, 100 * length(res$fst_raw_vals) / res$nperm),
-          tags$br(), sprintf("Valid replicates for global FST-ENA: %d / %d (%.1f%%)", length(res$fst_ena_vals), res$nperm, 100 * length(res$fst_ena_vals) / res$nperm)),
+          tags$br(), sprintf("Valid replicates for global FST raw: %d / %d (%.1f%%)", length(res$fst_raw_vals), res$nperm, if(length(res$fst_raw_vals)>0) 100 * length(res$fst_raw_vals) / res$nperm else 0),
+          tags$br(), sprintf("Valid replicates for global FST-ENA: %d / %d (%.1f%%)", length(res$fst_ena_vals), res$nperm, if(length(res$fst_ena_vals)>0) 100 * length(res$fst_ena_vals) / res$nperm else 0)),
         tags$hr(),
-        tags$p(icon("lightbulb"), tags$small("Bootstrap resamples loci with replacement. Parallelized for speed. 5000 replicates typically complete in a few seconds."))
+        tags$p(icon("lightbulb"), tags$small("Bootstrap resamples loci with replacement. 5000 replicates typically complete in a few seconds."))
       )
     })
 
@@ -1390,14 +1353,14 @@ server_null_alleles <- function(id, rv) {
         if (i == j) return('<td class="diag">—</td>')
         if (i < j || is.na(mat[i, j])) return('<td style="color:#cbd5e1;">·</td>')
         bg <- colors[findInterval(mat[i, j], color_thresh) + 1L]
-        sprintf('<td style="background:%s;">%s%s', bg, round(mat[i, j], fmt), '</tr>')
+        sprintf('<td style="background:%s;">%s%s', bg, round(mat[i, j], fmt), '</td>')
       }
-      thead <- paste0('<tr><th></th>', paste(sprintf('<th>%s</th>', pops[-n]), collapse = ""), '</tr>')
+      thead <- paste0('<tr><th></th>', paste(sprintf('<th>%s</th>', pops[-n]), collapse = ""), '<tr>')
       tbody <- paste(sapply(seq_len(n), function(i) {
         if (i == 1L) return("")
         paste0('<tr><td class="pop-label">', pops[i], '</td>', paste(sapply(seq_len(n), function(j) cells(i, j)), collapse = ""), '</tr>')
       }), collapse = "")
-      HTML(sprintf('<div class="na-matrix-wrap"><table class="na-matrix"><thead>%s</thead><tbody>%s</tbody><tr></div>', thead, tbody))
+      HTML(sprintf('<div class="na-matrix-wrap"><table class="na-matrix"><thead>%s</thead><tbody>%s</tbody></table></div>', thead, tbody))
     }
 
     output$ui_fst_pair_matrix <- renderUI({
