@@ -107,6 +107,7 @@ null_alleles_UI <- function(id) {
     .na-matrix .diag  { background:#f1f5f9 !important; color:#94a3b8; text-align:center; }
     .na-matrix .upper { color:#cbd5e1; text-align:center; }
     .na-matrix .pop-label { font-weight:700; color:#0f172a; text-align:left; }
+    .na-matrix .locus-label { font-weight:600; color:#0f172a; text-align:left; font-style:italic; }
 
     /* ── Bootstrap result strip ──────────────────────────────────────── */
     .na-boot-result { background:#faf5ff; border:1px solid #d8b4fe; border-radius:8px; padding:.65rem 1rem; font-size:12px; color:#3b0764; font-family:'IBM Plex Mono',monospace; line-height:2; margin-bottom:.9rem; }
@@ -131,9 +132,6 @@ null_alleles_UI <- function(id) {
       downloadButton(ns(csv_id),"CSV",class="btn btn-default btn-xs",style="padding:2px 10px;font-size:11px;"),
       downloadButton(ns(txt_id),"TXT",class="btn btn-default btn-xs",style="padding:2px 10px;font-size:11px;"))
 
-  # Bootstrap panel helper
-  # type: "loci_only" (global FST — only over loci)
-  #       "both"      (pairwise — over loci + over individuals)
   boot_panel <- function(run_id, result_id, dl_csv_id, dl_txt_id, type = "both") {
     boot_choices <- if (type == "loci_only")
       c("Bootstrap over loci" = "loci")
@@ -150,7 +148,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-info-boot", icon("info-circle"),
           tags$div(
             tags$strong("Bootstrap over loci:"),
-            " resample loci with replacement \u2014 95% CI on the multilocus statistic and per-locus CI.",
+            " resample loci with replacement \u2014 95% CI on the multilocus statistic + per-locus observed values.",
             if (type != "loci_only") tagList(tags$br(),
               tags$strong("Bootstrap over individuals:"),
               " resample individuals within each population with replacement \u2014 95% CI on the statistic."),
@@ -159,19 +157,15 @@ null_alleles_UI <- function(id) {
           )
         ),
         fluidRow(
-          column(3,
-            numericInput(ns(paste0(run_id,"_nboot")),
-              label="Replicates:", value=5000, min=999, max=9999, step=1000)),
-          column(4,
-            selectInput(ns(paste0(run_id,"_type")),
-              label="Bootstrap type:",
-              choices=boot_choices,
-              selected=if(type=="loci_only") "loci" else "both_boot")),
-          column(3,
-            tags$div(style="margin-top:25px;",
-              actionButton(ns(run_id),
-                label=tagList(icon("random"),tags$strong(" Run Bootstrap")),
-                class="na-btn-boot btn")))
+          column(3, numericInput(ns(paste0(run_id,"_nboot")),
+            label="Replicates:", value=5000, min=999, max=9999, step=1000)),
+          column(4, selectInput(ns(paste0(run_id,"_type")),
+            label="Bootstrap type:", choices=boot_choices,
+            selected=if(type=="loci_only") "loci" else "both_boot")),
+          column(3, tags$div(style="margin-top:25px;",
+            actionButton(ns(run_id),
+              label=tagList(icon("random"),tags$strong(" Run Bootstrap")),
+              class="na-btn-boot btn")))
         ),
         uiOutput(ns(result_id)),
         xbtn(dl_csv_id, dl_txt_id)
@@ -180,8 +174,7 @@ null_alleles_UI <- function(id) {
   }
 
   # ── Root container ─────────────────────────────────────────────────────────
-  tags$div(class="na-module",
-    custom_css,
+  tags$div(class="na-module", custom_css,
 
     # ── Header ────────────────────────────────────────────────────────────────
     tags$div(class="na-header",
@@ -251,17 +244,15 @@ null_alleles_UI <- function(id) {
     # ── tabsetPanel ──────────────────────────────────────────────────────────
     tabsetPanel(id=ns("na_tabs"), type="tabs",
 
-      # ══ TAB 1 — p_nulls per locus x population ═══════════════════════════ #
+      # ══ TAB 1 ═════════════════════════════════════════════════════════════ #
       tabPanel(title=tagList(icon("table")," Per locus \u00d7 population"),
                value="tab_per", br(),
         tags$div(class="na-info", icon("info-circle"),
-          tags$div(
-            "Null allele frequency estimated by EM per locus \u00d7 population.", tags$br(),
+          tags$div("Null allele frequency estimated by EM per locus \u00d7 population.", tags$br(),
             tags$strong("p_nulls"),": estimated null allele frequency.  ",
             tags$strong("N"),": total individuals in population.  ",
             tags$strong("N_exp_blanks = N \u00d7 p_nulls\u00b2"),": expected null homozygote count.  ",
-            tags$strong("p_nulls\u00d7N"),": expected null allele copies."
-          )),
+            tags$strong("p_nulls\u00d7N"),": expected null allele copies.")),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",tags$div(class="na-panel-title",icon("sliders-h")," Filter parameters")),
           tags$div(class="na-panel-body",
@@ -269,10 +260,7 @@ null_alleles_UI <- function(id) {
               column(3,selectInput(ns("t1_locus"),"Locus:",choices=c("All loci"="all"),selected="all")),
               column(3,selectInput(ns("t1_pop"),"Population:",choices=c("All populations"="all"),selected="all")),
               column(3,tags$div(style="margin-top:25px;",
-                actionButton(ns("run_t1"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn btn")))
-            )
-          )
-        ),
+                actionButton(ns("run_t1"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn btn")))))),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",icon("list"),
@@ -282,28 +270,21 @@ null_alleles_UI <- function(id) {
           tags$div(class="na-panel-body",DT::DTOutput(ns("dt_t1")),xbtn("dl_t1_csv","dl_t1_txt")))
       ),
 
-      # ══ TAB 2 — Global summary per locus ════════════════════════════════ #
+      # ══ TAB 2 ═════════════════════════════════════════════════════════════ #
       tabPanel(title=tagList(icon("globe")," Global summary per locus"),
                value="tab_global", br(),
         tags$div(class="na-info", icon("info-circle"),
-          tags$div(
-            "Global summary across all populations per locus.", tags$br(),
-            tags$strong("Av(N_exp_blanks)")," = \u03a3(N\u1d62 \u00d7 p\u1d62\u00b2): total expected null homozygotes across all populations.", tags$br(),
-            tags$strong("Av(p_nulls)")," = \u03a3(N\u1d62 \u00d7 p\u1d62) / N_tot: N-weighted mean of p_nulls.  ",
-            tags$strong("N_tot"),": total individuals.  ",
-            tags$strong("N_blanks"),": observed missing genotypes.  ",
-            tags$strong("f(expBlanks) = Av(N_exp_blanks) / N_tot"),"."
-          )),
+          tags$div("Global summary across all populations per locus.", tags$br(),
+            tags$strong("Av(N_exp_blanks)")," = \u03a3(N\u1d62 \u00d7 p\u1d62\u00b2): total expected null homozygotes.", tags$br(),
+            tags$strong("Av(p_nulls)")," = \u03a3(N\u1d62 \u00d7 p\u1d62) / N_tot: N-weighted mean.  ",
+            tags$strong("f(expBlanks) = Av(N_exp_blanks) / N_tot"),".")),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",tags$div(class="na-panel-title",icon("sliders-h")," Filter parameters")),
           tags$div(class="na-panel-body",
             fluidRow(
               column(3,selectInput(ns("t2_locus"),"Locus:",choices=c("All loci"="all"),selected="all")),
               column(3,tags$div(style="margin-top:25px;",
-                actionButton(ns("run_t2"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn btn")))
-            )
-          )
-        ),
+                actionButton(ns("run_t2"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn btn")))))),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",icon("globe")," Global null allele frequency per locus",
@@ -312,63 +293,50 @@ null_alleles_UI <- function(id) {
           tags$div(class="na-panel-body",DT::DTOutput(ns("dt_t2")),xbtn("dl_t2_csv","dl_t2_txt")))
       ),
 
-      # ══ TAB 3 — Global FST (ENA) + Bootstrap over loci ══════════════════ #
+      # ══ TAB 3 — Global FST (ENA) + Bootstrap ══════════════════════════════ #
       tabPanel(title=tagList(icon("chart-bar")," Global FST (ENA)"),
                value="tab_fst_global", br(),
         tags$div(class="na-info-teal", icon("info-circle"),
           tags$div(
             tags$strong("Global multilocus FST")," \u2014 Weir (1996) following Genepop's method.", tags$br(),
-            tags$strong("Raw FST"),": computed from observed allele frequencies (null homozygotes excluded from the denominator).", tags$br(),
+            tags$strong("Raw FST"),": computed from observed allele frequencies (null homozygotes excluded from denominator).", tags$br(),
             tags$strong("FST-ENA"),": computed from EM-corrected allele frequencies (",
-            tags$em("Excluding Null Alleles"),") \u2014 Chapuis & Estoup (2007)."
-          )),
+            tags$em("Excluding Null Alleles"),") \u2014 Chapuis & Estoup (2007).")),
         tags$div(class="na-formula",
-          tags$strong("Weir (1996) formula:"),tags$br(),
-          "FST = S1 / S3",tags$br(),
-          "S1 = \u03a3_loci [s\u00b2P \u00d7 nc]   S3 = \u03a3_loci [(s\u00b2P + s\u00b2I + s\u00b2G) \u00d7 nc]",tags$br(),
-          "nc = (N_tot \u2212 \u03a3ni\u00b2/N_tot) / (r\u22121)   ;   r = number of effective populations",tags$br(),
-          tags$strong("ENA: nA = corrdgenefreq \u00d7 2\u00d7ni   ;   AA_corr = AA \u00d7 p / (p + 2r)")
-        ),
+          tags$strong("Weir (1996):"),tags$br(),
+          "FST = S1/S3   S1 = \u03a3[s\u00b2P\u00d7nc]   S3 = \u03a3[(s\u00b2P+s\u00b2I+s\u00b2G)\u00d7nc]",tags$br(),
+          "nc = (N_tot\u2212\u03a3ni\u00b2/N_tot)/(r\u22121)   ENA: nA=corrdgenefreq\u00d72ni ; AA_corr=AA\u00d7p/(p+2r)"),
         tags$div(class="na-compare-grid",
           tags$div(class="na-compare-card",
             tags$div(class="na-compare-head na-compare-head-raw",icon("table")," Raw FST \u2014 Weir (1996)"),
-            tags$div(class="na-compare-body",
-              "Observed allele frequencies, null homozygotes excluded from denominator.",tags$br(),
-              "May be upwardly biased when null alleles are present.")),
+            tags$div(class="na-compare-body","Observed allele frequencies, null homozygotes excluded from denominator.",tags$br(),"May be upwardly biased when null alleles are present.")),
           tags$div(class="na-compare-card",
             tags$div(class="na-compare-head na-compare-head-corr",icon("check-circle")," FST-ENA \u2014 Chapuis & Estoup (2007)"),
-            tags$div(class="na-compare-body",
-              "EM-corrected allele frequencies (FreeNA algorithm).",tags$br(),
-              "Bias due to null homozygotes is removed."))
+            tags$div(class="na-compare-body","EM-corrected allele frequencies (FreeNA algorithm).",tags$br(),"Bias due to null homozygotes is removed."))
         ),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",tags$div(class="na-panel-title",icon("sliders-h")," Parameters")),
           tags$div(class="na-panel-body",
             fluidRow(column(3,tags$div(style="margin-top:5px;",
-              actionButton(ns("run_fst_global"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn-teal btn"))))
-          )
-        ),
+              actionButton(ns("run_fst_global"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn-teal btn")))))),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",icon("list")," Global multilocus FST \u2014 per locus (raw and ENA-corrected)",
               tags$span(style="font-size:10.5px;color:#64748b;margin-left:8px;font-weight:400;",
                 "Locus \u00b7 Raw FST \u00b7 FST-ENA \u00b7 \u0394FST \u00b7 N eff. pops (raw) \u00b7 N eff. pops (ENA)"))),
-          tags$div(class="na-panel-body",DT::DTOutput(ns("dt_fst_global")),xbtn("dl_fst_global_csv","dl_fst_global_txt"))
-        ),
-        # Bootstrap — global FST (loci only)
+          tags$div(class="na-panel-body",DT::DTOutput(ns("dt_fst_global")),xbtn("dl_fst_global_csv","dl_fst_global_txt"))),
         boot_panel("run_boot_fst_global","ui_boot_fst_global",
-                   "dl_boot_fst_global_csv","dl_boot_fst_global_txt", type="loci_only")
+                   "dl_boot_fst_global_csv","dl_boot_fst_global_txt",type="loci_only")
       ),
 
-      # ══ TAB 4 — Pairwise FST (ENA) + Bootstrap ══════════════════════════ #
+      # ══ TAB 4 — Pairwise FST (ENA) + Bootstrap ════════════════════════════ #
       tabPanel(title=tagList(icon("exchange-alt")," Pairwise FST (ENA)"),
                value="tab_fst_pair", br(),
         tags$div(class="na-info-teal", icon("info-circle"),
           tags$div(
             tags$strong("Pairwise FST")," \u2014 Weir (1996) for each pair of populations.", tags$br(),
-            "Lower triangle matrix: raw FST (uncorrected) and FST-ENA (ENA-corrected).", tags$br(),
-            tags$strong("NA"),": computation not applicable (insufficient sample size for the pair)."
-          )),
+            "Lower triangle: raw FST (uncorrected) and FST-ENA (ENA-corrected).", tags$br(),
+            tags$strong("NA"),": insufficient sample size for the pair.")),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",tags$div(class="na-panel-title",icon("sliders-h")," Parameters")),
           tags$div(class="na-panel-body",
@@ -377,42 +345,33 @@ null_alleles_UI <- function(id) {
                 choices=c("Raw FST (uncorrected)"="raw","FST-ENA (corrected)"="ena","Both side by side"="both"),
                 selected="both",inline=FALSE)),
               column(3,tags$div(style="margin-top:25px;",
-                actionButton(ns("run_fst_pair"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn-teal btn")))
-            )
-          )
-        ),
+                actionButton(ns("run_fst_pair"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn-teal btn")))))),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",tags$div(class="na-panel-title",icon("th")," Pairwise FST matrix \u2014 lower triangle")),
-          tags$div(class="na-panel-body",uiOutput(ns("ui_fst_pair_matrix")),xbtn("dl_fst_pair_csv","dl_fst_pair_txt"))
-        ),
+          tags$div(class="na-panel-body",uiOutput(ns("ui_fst_pair_matrix")),xbtn("dl_fst_pair_csv","dl_fst_pair_txt"))),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",icon("list")," Pairwise FST \u2014 long tabular format",
               tags$span(style="font-size:10.5px;color:#64748b;margin-left:8px;font-weight:400;",
-                "Pop1 \u00b7 Pop2 \u00b7 Raw FST \u00b7 FST-ENA \u00b7 \u0394FST (ENA \u2212 raw)"))),
-          tags$div(class="na-panel-body",DT::DTOutput(ns("dt_fst_pair")),xbtn("dl_fst_pair_long_csv","dl_fst_pair_long_txt"))
-        ),
-        # Bootstrap — pairwise FST (loci + individuals)
+                "Pop1 \u00b7 Pop2 \u00b7 Raw FST \u00b7 FST-ENA \u00b7 \u0394FST"))),
+          tags$div(class="na-panel-body",DT::DTOutput(ns("dt_fst_pair")),xbtn("dl_fst_pair_long_csv","dl_fst_pair_long_txt"))),
         boot_panel("run_boot_fst_pair","ui_boot_fst_pair",
-                   "dl_boot_fst_pair_csv","dl_boot_fst_pair_txt", type="both")
+                   "dl_boot_fst_pair_csv","dl_boot_fst_pair_txt",type="both")
       ),
 
-      # ══ TAB 5 — DCSE distance (INA) + Bootstrap ═════════════════════════ #
+      # ══ TAB 5 — DCSE distance (INA) + Bootstrap ═══════════════════════════ #
       tabPanel(title=tagList(icon("ruler-combined")," DCSE distance (INA)"),
                value="tab_dc", br(),
         tags$div(class="na-info-teal", icon("info-circle"),
           tags$div(
             tags$strong("Cavalli-Sforza & Edwards (1967) chord genetic distance")," \u2014 pairwise DCSE.", tags$br(),
-            tags$strong("Raw DCSE"),": computed from observed allele frequencies (null allele state excluded).", tags$br(),
-            tags$strong("DCSE-INA"),": null allele included as an additional allelic state (",
-            tags$em("Including Null Alleles"),") \u2014 Chapuis & Estoup (2007)."
-          )),
+            tags$strong("Raw DCSE"),": computed from observed allele frequencies (null allele excluded).", tags$br(),
+            tags$strong("DCSE-INA"),": null allele included as an extra allelic state (",
+            tags$em("Including Null Alleles"),") \u2014 Chapuis & Estoup (2007).")),
         tags$div(class="na-formula",
-          tags$strong("Cavalli-Sforza & Edwards (1967) formula:"),tags$br(),
-          "DCSE(i,j) = (2/\u03c0) \u00d7 \u221a[ 2 \u00d7 (1 \u2212 \u03a3_k \u221a(p_ik \u00d7 p_jk)) ]",tags$br(),
-          "Averaged over valid loci (CSprod \u2264 1)",tags$br(),
-          tags$strong("INA:")," corrected frequencies + null allele added as extra state (freq = rd[locus, pop])"
-        ),
+          tags$strong("Cavalli-Sforza & Edwards (1967):"),tags$br(),
+          "DCSE(i,j) = (2/\u03c0)\u00d7\u221a[2\u00d7(1\u2212\u03a3_k\u221a(p_ik\u00d7p_jk))]   averaged over valid loci (CSprod\u22641)",tags$br(),
+          tags$strong("INA:")," corrdgenefreq + null allele appended (freq = rd[locus, pop]) \u2014 Pascal: ajustement_r"),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",tags$div(class="na-panel-title",icon("sliders-h")," Parameters")),
           tags$div(class="na-panel-body",
@@ -421,34 +380,27 @@ null_alleles_UI <- function(id) {
                 choices=c("Raw DCSE (uncorrected)"="raw","DCSE-INA (corrected)"="ina","Both side by side"="both"),
                 selected="both",inline=FALSE)),
               column(3,tags$div(style="margin-top:25px;",
-                actionButton(ns("run_dc"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn-teal btn")))
-            )
-          )
-        ),
+                actionButton(ns("run_dc"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn-teal btn")))))),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",tags$div(class="na-panel-title",icon("th")," Pairwise DCSE matrix \u2014 lower triangle")),
-          tags$div(class="na-panel-body",uiOutput(ns("ui_dc_matrix")),xbtn("dl_dc_csv","dl_dc_txt"))
-        ),
+          tags$div(class="na-panel-body",uiOutput(ns("ui_dc_matrix")),xbtn("dl_dc_csv","dl_dc_txt"))),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",icon("list")," Pairwise DCSE \u2014 long tabular format",
               tags$span(style="font-size:10.5px;color:#64748b;margin-left:8px;font-weight:400;",
-                "Pop1 \u00b7 Pop2 \u00b7 Raw DCSE \u00b7 DCSE-INA \u00b7 \u0394DCSE (INA \u2212 raw)"))),
-          tags$div(class="na-panel-body",DT::DTOutput(ns("dt_dc")),xbtn("dl_dc_long_csv","dl_dc_long_txt"))
-        ),
-        # Bootstrap — pairwise DCSE (loci + individuals)
+                "Pop1 \u00b7 Pop2 \u00b7 Raw DCSE \u00b7 DCSE-INA \u00b7 \u0394DCSE"))),
+          tags$div(class="na-panel-body",DT::DTOutput(ns("dt_dc")),xbtn("dl_dc_long_csv","dl_dc_long_txt"))),
         boot_panel("run_boot_dc","ui_boot_dc",
-                   "dl_boot_dc_csv","dl_boot_dc_txt", type="both")
+                   "dl_boot_dc_csv","dl_boot_dc_txt",type="both")
       ),
 
-      # ══ TAB 6 — FST per locus x pair ════════════════════════════════════ #
+      # ══ TAB 6 — FST per locus x pair ══════════════════════════════════════ #
       tabPanel(title=tagList(icon("table")," FST per locus \u00d7 pair"),
                value="tab_fst_locus", br(),
         tags$div(class="na-info-teal", icon("info-circle"),
           tags$div(
             tags$strong("Per-locus FST")," for each pair of populations.", tags$br(),
-            "Useful for detecting outlier loci and comparing raw versus ENA-corrected estimates locus by locus."
-          )),
+            "Useful for detecting outlier loci and comparing raw versus ENA-corrected estimates locus by locus.")),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",tags$div(class="na-panel-title",icon("sliders-h")," Filters")),
           tags$div(class="na-panel-body",
@@ -457,15 +409,12 @@ null_alleles_UI <- function(id) {
               column(3,selectInput(ns("fl_pop1"),"Population 1:",choices=c("All pairs"="all"),selected="all")),
               column(3,selectInput(ns("fl_pop2"),"Population 2:",choices=c("All pairs"="all"),selected="all")),
               column(3,tags$div(style="margin-top:25px;",
-                actionButton(ns("run_fst_locus"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn-teal btn")))
-            )
-          )
-        ),
+                actionButton(ns("run_fst_locus"),label=tagList(icon("play"),tags$strong(" Compute")),class="na-btn-teal btn")))))),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",icon("list")," FST per locus \u00d7 pair (raw and ENA-corrected)",
               tags$span(style="font-size:10.5px;color:#64748b;margin-left:8px;font-weight:400;",
-                "Locus \u00b7 Pop1 \u00b7 Pop2 \u00b7 Raw FST \u00b7 FST-ENA \u00b7 \u0394FST \u00b7 N_i (raw) \u00b7 N_j (raw) \u00b7 N_i (ENA) \u00b7 N_j (ENA)"))),
+                "Locus \u00b7 Pop1 \u00b7 Pop2 \u00b7 Raw FST \u00b7 FST-ENA \u00b7 \u0394FST \u00b7 N_i(raw) \u00b7 N_j(raw) \u00b7 N_i(ENA) \u00b7 N_j(ENA)"))),
           tags$div(class="na-panel-body",DT::DTOutput(ns("dt_fst_locus")),xbtn("dl_fst_locus_csv","dl_fst_locus_txt")))
       )
 
