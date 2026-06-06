@@ -4184,11 +4184,6 @@ server_general_stats <- function(id, rv) {
     #                batch_permute_g_stat_pairwise_parallel()
     # ═══════════════════════════════════════════════════════════════════════
 
-    stopifnot(
-      exists("batch_permute_g_stat_parallel",          mode = "function"),
-      exists("batch_permute_g_stat_pairwise_parallel", mode = "function")
-    )
-
     ## Reactive containers ----
     g_test_results  <- reactiveVal(NULL)
     g_test_timing   <- reactiveVal(NULL)
