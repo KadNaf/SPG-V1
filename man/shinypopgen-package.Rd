@@ -8,12 +8,26 @@
 \description{
 ShinyPopGen is an interactive Shiny application for exploratory and descriptive population genetics analyses from individual-based multilocus datasets. It supports data import and formatting, marker inspection, estimation of standard diversity and differentiation statistics (Weir & Cockerham 1984), linkage disequilibrium analyses, and null allele screening.
 }
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://forge.ird.fr/intertryp/shinypopgen}
+  \item Report bugs at \url{https://forge.ird.fr/intertryp/shinypopgen/-/issues}
+}
+
+}
 \author{
 \strong{Maintainer}: Vincent Manzanilla \email{vincent.manzanilla@ird.fr}
 
+Authors:
+\itemize{
+  \item Naffiou Kadiri \email{knaffiou96@gmail.com}
+  \item Thierry de Meeûs \email{thierry.demeeus@ird.fr}
+}
+
 Other contributors:
 \itemize{
-  \item INTERTRYP / IRD / CIRAD [copyright holder]
+  \item INTERTRYP, IRD, CIRAD [copyright holder]
 }
 
 }

@@ -97,6 +97,14 @@ boot_indiv_hs_cpp <- function(dat, pop_col_1based = 1L, missing_code = 0L, base 
     .Call(`_shinypopgen_boot_indiv_hs_cpp`, dat, pop_col_1based, missing_code, base, B, seed, n_threads)
 }
 
+batch_permute_g_stat_parallel <- function(dat, pop_col_1based = 1L, missing_code = 0L, base = 1000L, B = 5000L, n_threads = 1L, seed = 1.0) {
+    .Call(`_shinypopgen_batch_permute_g_stat_parallel`, dat, pop_col_1based, missing_code, base, B, n_threads, seed)
+}
+
+batch_permute_g_stat_pairwise_parallel <- function(dat, pop_col_1based = 1L, missing_code = 0L, base = 1000L, B = 5000L, n_threads = 1L, seed = 1.0) {
+    .Call(`_shinypopgen_batch_permute_g_stat_pairwise_parallel`, dat, pop_col_1based, missing_code, base, B, n_threads, seed)
+}
+
 ld_pvalues_cpp <- function(Population, geno_mat, base, nbperms = 10000L, seed = 1L) {
     .Call(`_shinypopgen_ld_pvalues_cpp`, Population, geno_mat, base, nbperms, seed)
 }
