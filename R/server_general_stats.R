@@ -4180,5 +4180,177 @@ server_general_stats <- function(id, rv) {
       }
     )
 
+    # ── G-based permutation test outputs (Subdivision tab) ────────────────────────
+    # Ces outputs alimentent le tabPanel "G-based permutation test" et le
+    # valueBoxOutput("global_g_stat_box") ajoutés dans mod_subdivision_ui.
+    # Ils s'appuient sur g_test_results() déjà calculé dans la section G-TEST.
+    # ──────────────────────────────────────────────────────────────────────────────
+
+    ## Value box : G statistic global (résumé FST panel) ----
+    output$global_g_stat_box <- renderValueBox({
+      shiny::req(g_test_results())
+      res <- g_test_results()
+      G   <- res$g_obs_global$G
+      p   <- res$global_tbl$p_value[1]
+
+      display_G <- if (is.na(G)) "N/A" else format(round(G, 2), nsmall = 2)
+      display_p <- if (is.na(p)) "" else if (p < 0.001) " (p < 0.001)" else
+        sprintf(" (p = %.4f)", p)
+
+      color <- if (is.na(p)) "light-blue"
+              else if (p < 0.001) "maroon"
+              else if (p < 0.05)  "orange"
+              else                 "aqua"
+
+      valueBox(
+        value    = display_G,
+        subtitle = HTML(paste0("<small>G<sub>obs</sub> global<br>G-based permutation", display_p, "</small>")),
+        color    = color,
+        icon     = icon("chart-area"),
+        width    = NULL
+      )
+    })
+
+    ## Table : G per locus + p-value (tab "G-based permutation test") ----
+    output$g_perm_table <- DT::renderDT({
+      shiny::req(g_test_results())
+      res <- g_test_results()
+      df  <- res$per_locus_tbl
+
+      shiny::validate(shiny::need(
+        is.data.frame(df) && nrow(df) > 0,
+        "Lancez d'abord l'analyse FST avec le test G activé."
+      ))
+
+      # Append a global summary row
+      global_row <- data.frame(
+        Locus    = "Global",
+        G_obs    = res$g_obs_global$G,
+        df       = res$g_obs_global$df,
+        p_value  = res$global_tbl$p_value[1],
+        q_value  = NA_real_,
+        decision = res$global_tbl$decision[1],
+        stringsAsFactors = FALSE
+      )
+      df_full <- rbind(df, global_row)
+
+      pretty <- c(
+        Locus    = "Locus",
+        G_obs    = "G observed",
+        df       = "df",
+        p_value  = "p-value (raw)",
+        q_value  = "q-value (FDR-BH)",
+        decision = "Decision (α = 0.05)"
+      )
+
+      DT::datatable(
+        df_full,
+        extensions = "Buttons",
+        options    = list(
+          dom        = "Bfrtip",
+          buttons    = c("copy"),
+          pageLength = 25,
+          scrollX    = TRUE
+        ),
+        rownames = FALSE,
+        colnames = unname(pretty[names(df_full)])
+      ) %>%
+        DT::formatRound(columns = c("G_obs", "p_value", "q_value"), digits = 4) %>%
+        DT::formatStyle(
+          "q_value",
+          backgroundColor = DT::styleInterval(
+            c(0.01, 0.05), c("#f8d7da", "#fff3cd", "white")
+          )
+        ) %>%
+        DT::formatStyle(
+          "decision",
+          color      = DT::styleEqual(
+            c("Significant", "Not significant"), c("#721c24", "#155724")
+          ),
+          fontWeight = "bold"
+        )
+    })
+
+    ## Plot : null G distribution + G observed (tab "G-based permutation test") ----
+    .make_g_perm_plot <- function() {
+      shiny::req(g_test_results())
+      res    <- g_test_results()
+      G_null <- res$G_null_global
+      G_obs  <- res$g_obs_global$G
+      p_val  <- res$global_tbl$p_value[1]
+
+      G_null <- G_null[is.finite(G_null)]
+      shiny::validate(shiny::need(
+        length(G_null) > 0 && is.finite(G_obs),
+        "Aucune donnée de permutation disponible."
+      ))
+
+      label_p <- if (is.na(p_val)) "p = N/A"
+                else if (p_val < 0.0001) "p < 0.0001"
+                else sprintf("p = %.4f", p_val)
+
+      df_plot <- data.frame(G = G_null)
+
+      ggplot2::ggplot(df_plot, ggplot2::aes(x = G)) +
+        ggplot2::geom_histogram(
+          bins  = 50,
+          fill  = "#c4b5fd", color = "#5b21b6", alpha = 0.8
+        ) +
+        ggplot2::geom_vline(
+          xintercept = G_obs, color = "#dc2626",
+          linewidth = 1.4, linetype = "solid"
+        ) +
+        ggplot2::annotate(
+          "text", x = G_obs, y = Inf,
+          label  = sprintf("G_obs = %.2f\n%s", G_obs, label_p),
+          hjust  = -0.08, vjust = 1.5,
+          color  = "#dc2626", fontface = "bold", size = 4
+        ) +
+        ggplot2::labs(
+          title    = "Distribution nulle de G (permutation des labels de population)",
+          subtitle = sprintf(
+            "%d permutations \u2014 ligne rouge = G observ\u00e9",
+            length(G_null)
+          ),
+          x = "G-statistique",
+          y = "Fr\u00e9quence"
+        ) +
+        ggplot2::theme_minimal() +
+        ggplot2::theme(
+          plot.title    = ggplot2::element_text(face = "bold", hjust = 0.5, color = "#5b21b6"),
+          plot.subtitle = ggplot2::element_text(hjust = 0.5, color = "#6b7280")
+        )
+    }
+
+    output$g_perm_plot <- renderPlot({ .make_g_perm_plot() })
+
+    ## Download handlers ----
+    output$download_g_perm_table <- downloadHandler(
+      filename = function() paste0("g_perm_subdivision_", Sys.Date(), ".csv"),
+      content  = function(file) {
+        shiny::req(g_test_results())
+        utils::write.csv(g_test_results()$per_locus_tbl, file, row.names = FALSE)
+      }
+    )
+
+    output$download_g_perm_table_txt <- downloadHandler(
+      filename = function() paste0("g_perm_subdivision_", Sys.Date(), ".txt"),
+      content  = function(file) {
+        shiny::req(g_test_results())
+        utils::write.table(
+          g_test_results()$per_locus_tbl, file,
+          sep = "\t", row.names = FALSE, quote = FALSE
+        )
+      }
+    )
+
+    output$download_g_perm_plot <- downloadHandler(
+      filename = function() paste0("g_perm_plot_", Sys.Date(), ".png"),
+      content  = function(file) {
+        p <- .make_g_perm_plot()
+        ggplot2::ggsave(file, plot = p, width = 12, height = 6, dpi = 300)
+      }
+    )
+    # ── Fin G-based permutation test (Subdivision tab) ────────────────────────────
   })
 }
