@@ -749,12 +749,7 @@ server_general_stats <- function(id, rv) {
         utils::write.table(df, file, sep = "\t", row.names = FALSE, quote = FALSE)
       }
     )
-    
-    
-    
-    
-    
-    
+        
     # ==================================== FIS SECTION ANALYSIS ===============================================
     fis_context <- reactive({
       level <- input$analysis_level
@@ -4179,9 +4174,8 @@ server_general_stats <- function(id, rv) {
         dev.off()
       }
     )
-  })
-  
-  ###
+
+    ###
 
   # ═══════════════════════════════════════════════════════════════════════
   # G-BASED PERMUTATION TEST — Subdivision (Section 2)
@@ -4864,4 +4858,8 @@ server_general_stats <- function(id, rv) {
   # ═══ Fin G-based permutation test ═══════════════════════════════════════
 
   ###
+  
+  })
+  
+  
 }
