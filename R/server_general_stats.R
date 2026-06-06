@@ -3567,7 +3567,7 @@ server_general_stats <- function(id, rv) {
         return(NULL)
       }
 
-      waiter <- Waiter::Waiter$new(
+      waiter <- Waiter$new(
         id    = session$ns("g_per_locus_table"),
         html  = spin_3(),
         color = transparent(0.7)
