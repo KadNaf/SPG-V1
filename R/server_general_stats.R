@@ -4177,689 +4177,613 @@ server_general_stats <- function(id, rv) {
 
     ###
 
-  # ═══════════════════════════════════════════════════════════════════════
-  # G-BASED PERMUTATION TEST — Subdivision (Section 2)
-  # ═══════════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════════
+    # G-BASED PERMUTATION TEST — Subdivision
+    # Mirrors the FST section: C++ kernels, DB-first, same style.
+    # C++ functions: batch_permute_g_stat_parallel()
+    #                batch_permute_g_stat_pairwise_parallel()
+    # ═══════════════════════════════════════════════════════════════════════
 
-  ## Reactive containers ----
-  g_test_results <- reactiveVal(NULL)
-  g_test_timing  <- reactiveVal(NULL)
+    stopifnot(
+      exists("batch_permute_g_stat_parallel",          mode = "function"),
+      exists("batch_permute_g_stat_pairwise_parallel", mode = "function")
+    )
 
-  ## Helper: G-statistic for a (sub)matrix ----
-  .compute_g_stat <- function(mat, base) {
-    stopifnot(is.matrix(mat), ncol(mat) >= 2L, base > 1L)
-    pop_codes <- as.integer(mat[, 1L])
-    pops      <- sort(unique(pop_codes[is.finite(pop_codes) & pop_codes > 0L]))
-    n_pops    <- length(pops)
-    if (n_pops < 2L) return(list(G = NA_real_, df = NA_integer_,
-                                  n_ind = 0L, n_alleles = 0L))
+    ## Reactive containers ----
+    g_test_results  <- reactiveVal(NULL)
+    g_test_timing   <- reactiveVal(NULL)
 
-    G_total <- 0.0; df_total <- 0L; n_ind_total <- 0L; n_alleles_total <- 0L
+    ## Main function ----
+    run_g_based_test <- function(n_perm, conf_level,
+                                  do_global    = TRUE,
+                                  do_per_locus = TRUE,
+                                  do_pairwise  = FALSE) {
+      db_ready()
+      mat  <- hf_mat_r()
+      base <- base_r()
+      con  <- con_r()
 
-    for (j in seq(2L, ncol(mat))) {
-      g_vec <- as.integer(mat[, j])
-      ok    <- is.finite(g_vec) & g_vec > 0L
-      if (sum(ok) < 2L) next
-      a1 <- g_vec[ok] %/% base; a2 <- g_vec[ok] %% base
-      ok2 <- a1 > 0L & a2 > 0L
-      if (sum(ok2) < 2L) next
-      a1 <- a1[ok2]; a2 <- a2[ok2]; pop_sub <- pop_codes[ok][ok2]
-      all_alleles <- sort(unique(c(a1, a2))); n_a <- length(all_alleles)
-      if (n_a < 2L) next
-      n <- length(a1)
+      mat <- as.matrix(mat)
+      storage.mode(mat) <- "integer"
+      shiny::validate(
+        shiny::need(is.integer(mat),                      "hf_mat_r() must return an integer matrix"),
+        shiny::need(ncol(mat) >= 2L,                      "Need pop + at least 1 locus"),
+        shiny::need(all(mat[, 1L] > 0, na.rm = TRUE),     "Population codes must be positive integers (1..K)"),
+        shiny::need(isTRUE(is.finite(base)) && base > 1L, "Invalid base from params"),
+        shiny::need(n_perm >= 5000L,                      "Minimum 5 000 permutations required")
+      )
 
-      counts <- matrix(0L, nrow = n_pops, ncol = n_a,
-                      dimnames = list(as.character(pops), as.character(all_alleles)))
-      for (k in seq_len(n)) {
-        p_idx  <- match(pop_sub[k], pops)
-        a1_idx <- match(a1[k], all_alleles)
-        a2_idx <- match(a2[k], all_alleles)
-        if (!is.na(p_idx) && !is.na(a1_idx)) counts[p_idx, a1_idx] <- counts[p_idx, a1_idx] + 1L
-        if (!is.na(p_idx) && !is.na(a2_idx)) counts[p_idx, a2_idx] <- counts[p_idx, a2_idx] + 1L
+      loci_names <- colnames(mat)[-1L]
+      if (is.null(loci_names) || length(loci_names) == 0L)
+        loci_names <- paste0("L", seq_len(ncol(mat) - 1L))
+
+      # Population names from DB (same pattern as FST section)
+      pop_df <- DBI::dbGetQuery(con, sprintf(
+        "SELECT DISTINCT Population FROM %s WHERE Population IS NOT NULL ORDER BY Population",
+        sql_ident(con, tbl_meta_r())
+      ))
+      pop_codes <- as.character(sort(unique(mat[, 1L])))
+      pop_names <- as.character(pop_df$Population[seq_along(pop_codes)])
+      pop_lookup <- stats::setNames(pop_names, pop_codes)
+
+      n_loci <- length(loci_names)
+      n_pops <- length(pop_names)
+
+      # ── 1) Global + per-locus permutation (C++) ──────────────────────────
+      perm_res <- .step("batch_permute_g_stat_parallel()", batch_permute_g_stat_parallel(
+        dat            = mat,
+        pop_col_1based = 1L,
+        missing_code   = 0L,
+        base           = as.integer(base),
+        B              = as.integer(n_perm),
+        n_threads      = .n_threads(),
+        seed           = .seed()
+      ))
+
+      g_obs_vec     <- as.numeric(perm_res$G_locus_obs)
+      g_obs_overall <- as.numeric(perm_res$G_overall_obs)
+      p_per_locus   <- as.numeric(perm_res$p_G)
+      p_global      <- as.numeric(perm_res$p_G_overall)
+
+      names(g_obs_vec)   <- loci_names
+      names(p_per_locus) <- loci_names
+
+      # FDR correction (Benjamini-Hochberg) on per-locus p-values
+      q_per_locus <- p.adjust(p_per_locus, method = "BH")
+      names(q_per_locus) <- loci_names
+
+      # ── 2) Pairwise permutation (C++, optional) ───────────────────────────
+      pairwise_tbl   <- NULL
+      g_perm_pairwise <- NULL
+
+      if (do_pairwise && n_pops >= 2L) {
+        pw_res <- .step("batch_permute_g_stat_pairwise_parallel()",
+                        batch_permute_g_stat_pairwise_parallel(
+          dat            = mat,
+          pop_col_1based = 1L,
+          missing_code   = 0L,
+          base           = as.integer(base),
+          B              = as.integer(n_perm),
+          n_threads      = .n_threads(),
+          seed           = .seed()
+        ))
+
+        # Translate numeric pop codes to names
+        pop1_names <- unname(pop_lookup[as.character(pw_res$pop1_code)])
+        pop2_names <- unname(pop_lookup[as.character(pw_res$pop2_code)])
+        p_pw       <- as.numeric(pw_res$p_G)
+        g_obs_pw   <- as.numeric(pw_res$G_obs)
+
+        pairwise_tbl <- data.frame(
+          Pop1     = pop1_names,
+          Pop2     = pop2_names,
+          G_obs    = g_obs_pw,
+          p_value  = p_pw,
+          decision = ifelse(!is.na(p_pw) & p_pw < 0.05, "Significant", "Not significant"),
+          stringsAsFactors = FALSE
+        )
+        g_perm_pairwise <- pw_res$G_perm
       }
 
-      row_totals  <- rowSums(counts)
-      col_totals  <- colSums(counts)
-      grand_total <- sum(counts)
-      if (grand_total == 0L) next
+      # ── 3) Build final tables ─────────────────────────────────────────────
+      global_tbl <- data.frame(
+        Statistic = "Global G",
+        G_obs     = g_obs_overall,
+        p_value   = p_global,
+        n_perm    = n_perm,
+        decision  = if (!is.na(p_global) && p_global < 0.05) "Significant" else "Not significant",
+        stringsAsFactors = FALSE
+      )
 
-      G_locus <- 0.0
-      for (r in seq_len(n_pops))
-        for (c in seq_len(n_a)) {
-          obs <- counts[r, c]; if (obs == 0L) next
-          exp <- (row_totals[r] * col_totals[c]) / grand_total
-          if (exp <= 0) next
-          G_locus <- G_locus + obs * log(obs / exp)
-        }
-
-      G_total         <- G_total + 2.0 * G_locus
-      df_total        <- df_total + (n_pops - 1L) * (n_a - 1L)
-      n_ind_total     <- n_ind_total + n
-      n_alleles_total <- n_alleles_total + n_a
-    }
-    list(G = G_total, df = df_total, n_ind = n_ind_total, n_alleles = n_alleles_total)
-  }
-
-  ## Helper: permute population labels ----
-  .permute_pop_labels <- function(mat) {
-    mat_perm      <- mat
-    mat_perm[, 1L] <- sample(mat[, 1L], size = nrow(mat), replace = FALSE)
-    mat_perm
-  }
-
-  ## Main function: G-based permutation test ----
-  run_g_based_test <- function(n_perm, conf_level,
-                                do_global    = TRUE,
-                                do_per_locus = TRUE,
-                                do_pairwise  = FALSE) {
-    db_ready()
-    mat  <- hf_mat_r()
-    base <- base_r()
-
-    mat <- as.matrix(mat)
-    storage.mode(mat) <- "integer"
-    shiny::validate(
-      shiny::need(is.integer(mat),                          "hf_mat_r() must return an integer matrix"),
-      shiny::need(ncol(mat) >= 2L,                          "Need pop + at least 1 locus"),
-      shiny::need(all(mat[, 1L] > 0, na.rm = TRUE),         "Population codes must be positive integers"),
-      shiny::need(isTRUE(is.finite(base)) && base > 1L,     "Invalid base from params"),
-      shiny::need(n_perm >= 5000L,                          "Minimum 5 000 permutations required")
-    )
-
-    loci_names <- colnames(mat)[-1L]
-    if (is.null(loci_names) || length(loci_names) == 0L)
-      loci_names <- paste0("L", seq_len(ncol(mat) - 1L))
-
-    pop_codes  <- as.integer(mat[, 1L])
-    pop_levels <- attr(mat, "pop_levels")
-    pops       <- sort(unique(pop_codes[is.finite(pop_codes) & pop_codes > 0L]))
-    pop_names  <- if (!is.null(pop_levels)) as.character(pop_levels[pops]) else as.character(pops)
-    n_pops     <- length(pops)
-    n_loci     <- length(loci_names)
-
-    # 1) Observed G ----
-    g_obs_global    <- .compute_g_stat(mat, base)
-    g_obs_per_locus <- lapply(seq_len(n_loci), function(j)
-      .compute_g_stat(mat[, c(1L, j + 1L), drop = FALSE], base))
-    names(g_obs_per_locus) <- loci_names
-
-    pairs           <- if (do_pairwise && n_pops >= 2L) combn(seq_len(n_pops), 2L, simplify = FALSE) else list()
-    pair_names      <- sapply(pairs, function(pr) paste0(pop_names[pr[1]], "_vs_", pop_names[pr[2]]))
-    g_obs_pairwise  <- lapply(pairs, function(pr) {
-      sub <- mat[mat[, 1L] %in% pops[pr], , drop = FALSE]
-      .compute_g_stat(sub, base)
-    })
-    names(g_obs_pairwise) <- pair_names
-
-    # 2) Permutation loop ----
-    G_null_global    <- numeric(n_perm)
-    G_null_per_locus <- matrix(NA_real_, nrow = n_perm, ncol = n_loci,
-                                dimnames = list(NULL, loci_names))
-    G_null_pairwise  <- if (length(pairs) > 0)
-      matrix(NA_real_, nrow = n_perm, ncol = length(pairs),
-            dimnames = list(NULL, pair_names)) else NULL
-
-    pval_convergence_global <- numeric(n_perm)
-
-    withProgress(message = "G-based permutation test \u2014 subdivision", value = 0, {
-      for (b in seq_len(n_perm)) {
-        if (b %% 500L == 0L)
-          incProgress(500 / n_perm,
-                      detail = sprintf("Permutation %d / %d", b, n_perm))
-
-        mat_perm <- .permute_pop_labels(mat)
-
-        if (do_global) {
-          G_null_global[b] <- .compute_g_stat(mat_perm, base)$G
-          ge <- sum(G_null_global[seq_len(b)] >= g_obs_global$G, na.rm = TRUE)
-          pval_convergence_global[b] <- (ge + 1) / (b + 1)
-        }
-
-        if (do_per_locus)
-          for (j in seq_len(n_loci))
-            G_null_per_locus[b, j] <-
-              .compute_g_stat(mat_perm[, c(1L, j + 1L), drop = FALSE], base)$G
-
-        if (!is.null(G_null_pairwise))
-          for (k in seq_along(pairs)) {
-            pr  <- pairs[[k]]
-            sub <- mat_perm[mat_perm[, 1L] %in% pops[pr], , drop = FALSE]
-            G_null_pairwise[b, k] <- .compute_g_stat(sub, base)$G
-          }
-      }
-      setProgress(1)
-    })
-
-    # 3) P-values ----
-    p_global <- if (do_global && is.finite(g_obs_global$G)) {
-      (sum(G_null_global >= g_obs_global$G, na.rm = TRUE) + 1) / (n_perm + 1)
-    } else NA_real_
-
-    p_per_locus <- rep(NA_real_, n_loci); names(p_per_locus) <- loci_names
-    if (do_per_locus)
-      for (j in seq_len(n_loci))
-        if (is.finite(g_obs_per_locus[[j]]$G))
-          p_per_locus[j] <- (sum(G_null_per_locus[, j] >= g_obs_per_locus[[j]]$G,
-                                na.rm = TRUE) + 1) / (n_perm + 1)
-    q_per_locus <- p.adjust(p_per_locus, method = "BH")
-
-    p_pairwise <- if (!is.null(G_null_pairwise)) {
-      pv <- numeric(length(pairs)); names(pv) <- pair_names
-      for (k in seq_along(pairs))
-        if (is.finite(g_obs_pairwise[[k]]$G))
-          pv[k] <- (sum(G_null_pairwise[, k] >= g_obs_pairwise[[k]]$G,
-                        na.rm = TRUE) + 1) / (n_perm + 1)
-      pv
-    } else NULL
-
-    # 4) Final tables ----
-    global_tbl <- data.frame(
-      Statistic = "Global G",
-      G_obs     = g_obs_global$G,
-      df        = g_obs_global$df,
-      p_value   = p_global,
-      n_perm    = n_perm,
-      n_ind     = g_obs_global$n_ind,
-      decision  = if (!is.na(p_global) && p_global < 0.05) "Significant" else "Not significant",
-      stringsAsFactors = FALSE
-    )
-
-    per_locus_tbl <- data.frame(
-      Locus    = loci_names,
-      G_obs    = sapply(g_obs_per_locus, `[[`, "G"),
-      df       = sapply(g_obs_per_locus, `[[`, "df"),
-      p_value  = p_per_locus,
-      q_value  = q_per_locus,
-      decision = ifelse(!is.na(q_per_locus) & q_per_locus < 0.05,
-                        "Significant", "Not significant"),
-      stringsAsFactors = FALSE
-    )
-
-    pairwise_tbl <- if (!is.null(p_pairwise)) {
-      data.frame(
-        Pop1     = sapply(pairs, function(pr) pop_names[pr[1]]),
-        Pop2     = sapply(pairs, function(pr) pop_names[pr[2]]),
-        G_obs    = sapply(g_obs_pairwise, `[[`, "G"),
-        df       = sapply(g_obs_pairwise, `[[`, "df"),
-        p_value  = p_pairwise,
-        decision = ifelse(!is.na(p_pairwise) & p_pairwise < 0.05,
+      per_locus_tbl <- data.frame(
+        Locus    = loci_names,
+        G_obs    = g_obs_vec,
+        p_value  = p_per_locus,
+        q_value  = q_per_locus,
+        decision = ifelse(!is.na(q_per_locus) & q_per_locus < 0.05,
                           "Significant", "Not significant"),
         stringsAsFactors = FALSE
       )
-    } else NULL
 
-    list(
-      global_tbl              = global_tbl,
-      per_locus_tbl           = per_locus_tbl,
-      pairwise_tbl            = pairwise_tbl,
-      G_null_global           = G_null_global,
-      G_null_per_locus        = G_null_per_locus,
-      G_null_pairwise         = G_null_pairwise,
-      pval_convergence_global = pval_convergence_global,
-      g_obs_global            = g_obs_global,
-      g_obs_per_locus         = g_obs_per_locus,
-      g_obs_pairwise          = g_obs_pairwise,
-      metadata = list(
-        n_perm       = n_perm,
-        conf_level   = conf_level,
-        do_global    = do_global,
-        do_per_locus = do_per_locus,
-        do_pairwise  = do_pairwise,
-        n_pops       = n_pops,
-        n_loci       = n_loci,
-        pop_names    = pop_names,
-        loci_names   = loci_names
-      )
-    )
-  }
+      # p-value convergence (global): cumulative from permutation distribution
+      G_null_global <- as.numeric(perm_res$G_overall_perm)
+      pval_conv <- numeric(length(G_null_global))
+      for (b in seq_along(G_null_global)) {
+        ge <- sum(G_null_global[seq_len(b)] >= g_obs_overall, na.rm = TRUE)
+        pval_conv[b] <- (ge + 1) / (b + 1)
+      }
 
-  ## Observer: Run button ----
-  observeEvent(input$run_G_test, {
-    db_ready()
-
-    if (is.null(input$n_perm_g) || input$n_perm_g < 5000) {
-      showNotification("Minimum 5 000 permutations required.", type = "warning")
-      return(NULL)
-    }
-    if (!isTRUE(input$g_test_global) && !isTRUE(input$g_test_per_locus) &&
-        !isTRUE(input$g_test_pairwise)) {
-      showNotification("Select at least one test type.", type = "warning")
-      return(NULL)
-    }
-
-    waiter <- Waiter$new(
-      id    = session$ns("g_per_locus_table"),
-      html  = spin_3(),
-      color = transparent(0.7)
-    )
-    waiter$show()
-    on.exit(waiter$hide(), add = TRUE)
-
-    tryCatch({
-      start_time <- Sys.time()
-      shinyWidgets::updateProgressBar(session, "g_progress", value = 5)
-
-      results <- run_g_based_test(
-        n_perm       = as.integer(input$n_perm_g),
-        conf_level   = as.numeric(input$conf_level_g),
-        do_global    = isTRUE(input$g_test_global),
-        do_per_locus = isTRUE(input$g_test_per_locus),
-        do_pairwise  = isTRUE(input$g_test_pairwise)
-      )
-
-      shinyWidgets::updateProgressBar(session, "g_progress", value = 100)
-      duration <- round(as.numeric(difftime(Sys.time(), start_time, units = "secs")), 1)
-      g_test_timing(duration)
-      g_test_results(results)
-
-      showNotification(
-        sprintf("G-based test completed in %.1f s (%d permutations).",
-                duration, input$n_perm_g),
-        type = "message"
-      )
-    }, error = function(e) {
-      g_test_results(NULL); g_test_timing(NULL)
-      showNotification(paste("Error in G-based test:", e$message), type = "error")
-    })
-  })
-
-  ## Value boxes ----
-
-  output$g_global_obs_box <- renderValueBox({
-    shiny::req(g_test_results())
-    G <- g_test_results()$g_obs_global$G
-    valueBox(
-      value    = if (is.na(G)) "N/A" else format(round(G, 2), nsmall = 2),
-      subtitle = HTML("<small>G<sub>obs</sub><br>Global statistic</small>"),
-      color    = "purple", icon = icon("chart-area"), width = NULL
-    )
-  })
-
-  output$g_global_pvalue_box <- renderValueBox({
-    shiny::req(g_test_results())
-    p <- g_test_results()$global_tbl$p_value[1]
-    display <- if (is.na(p)) "N/A" else if (p < 0.0001) "< 0.0001" else
-      if (p < 0.001) "< 0.001" else format(round(p, 4), nsmall = 4)
-    color <- if (is.na(p)) "red" else if (p < 0.001) "red" else
-      if (p < 0.05) "yellow" else "green"
-    valueBox(
-      value    = display,
-      subtitle = HTML("<small>Global <i>p</i>-value<br>G permutation (one-sided)</small>"),
-      color    = color, icon = icon("balance-scale"), width = NULL
-    )
-  })
-
-  output$g_signif_loci_box <- renderValueBox({
-    shiny::req(g_test_results())
-    df  <- g_test_results()$per_locus_tbl
-    tot <- nrow(df)
-    sig <- sum(!is.na(df$q_value) & df$q_value < 0.05, na.rm = TRUE)
-    pct <- if (tot > 0) round(100 * sig / tot, 1) else 0
-    valueBox(
-      value    = paste0(sig, " / ", tot),
-      subtitle = HTML(paste0("<small>Significant loci (FDR&lt;0.05)<br>", pct, "% of total</small>")),
-      color    = if (sig > 0) "yellow" else "aqua",
-      icon     = icon("vial"), width = NULL
-    )
-  })
-
-  output$g_mean_pvalue_box <- renderValueBox({
-    shiny::req(g_test_results())
-    mp <- mean(g_test_results()$per_locus_tbl$p_value, na.rm = TRUE)
-    valueBox(
-      value    = if (is.na(mp)) "N/A" else format(round(mp, 4), nsmall = 4),
-      subtitle = HTML("<small>Mean <i>p</i>-value<br>Per-locus</small>"),
-      color    = "purple", icon = icon("calculator"), width = NULL
-    )
-  })
-
-  output$g_time_box <- renderValueBox({
-    shiny::req(g_test_timing())
-    sec <- g_test_timing()
-    valueBox(
-      value    = if (sec < 60) paste0(sec, " s") else paste0(round(sec / 60, 1), " min"),
-      subtitle = HTML("<small>Computation Time<br>G permutation</small>"),
-      color    = "light-blue", icon = icon("clock"), width = NULL
-    )
-  })
-
-  output$g_power_box <- renderValueBox({
-    shiny::req(g_test_results())
-    p     <- g_test_results()$global_tbl$p_value[1]
-    power <- if (is.na(p)) NA_real_ else 1 - p
-    valueBox(
-      value    = if (is.na(power)) "N/A" else paste0(round(100 * power, 1), "%"),
-      subtitle = HTML("<small>Power proxy<br>(1 \u2212 p-value)</small>"),
-      color    = "teal", icon = icon("bolt"), width = NULL
-    )
-  })
-
-  output$g_n_perm_box <- renderValueBox({
-    shiny::req(g_test_results())
-    n <- g_test_results()$metadata$n_perm
-    valueBox(
-      value    = format(n, big.mark = "\u202f"),
-      subtitle = HTML("<small>Permutations<br>performed</small>"),
-      color    = "light-blue", icon = icon("random"), width = NULL
-    )
-  })
-
-  output$g_fdr_box <- renderValueBox({
-    shiny::req(g_test_results())
-    df  <- g_test_results()$per_locus_tbl
-    med <- median(df$q_value, na.rm = TRUE)
-    valueBox(
-      value    = if (is.na(med)) "N/A" else format(round(med, 4), nsmall = 4),
-      subtitle = HTML("<small>Median q-value<br>FDR-BH (per locus)</small>"),
-      color    = "purple", icon = icon("filter"), width = NULL
-    )
-  })
-
-  ## Global result UI ----
-  output$g_global_result_ui <- renderUI({
-    shiny::req(g_test_results())
-    gt       <- g_test_results()$global_tbl
-    p        <- gt$p_value[1]
-    G        <- gt$G_obs[1]
-    df_val   <- gt$df[1]
-    decision <- gt$decision[1]
-    n_ind    <- gt$n_ind[1]
-
-    color <- if (is.na(p)) "#6c757d" else if (p < 0.001) "#721c24" else
-      if (p < 0.05) "#856404" else "#155724"
-    bg    <- if (is.na(p)) "#e2e3e5" else if (p < 0.001) "#f8d7da" else
-      if (p < 0.05) "#fff3cd" else "#d4edda"
-    p_fmt <- if (is.na(p)) "N/A" else if (p < 0.0001) "< 0.0001" else
-      format(round(p, 4), nsmall = 4)
-
-    tags$div(
-      style = sprintf("padding:15px; border-radius:8px; background:%s; border-left:5px solid %s;", bg, color),
-      tags$div(style = "font-size:14px; margin-bottom:8px;",
-        tags$strong("G = "), sprintf("%.4f", G),
-        tags$span(style = "margin-left:15px;", tags$strong("df = "), df_val),
-        tags$span(style = "margin-left:15px;", tags$strong("p-value = "), p_fmt),
-        tags$span(style = "margin-left:15px;", tags$strong("N ind. = "), n_ind)
-      ),
-      tags$div(style = sprintf("font-size:16px; font-weight:bold; color:%s;", color),
-        icon(if (decision == "Significant") "check-circle" else "times-circle"),
-        " ", decision,
-        tags$small(style = "display:block; font-weight:normal; font-size:12px; margin-top:5px;",
-          if (decision == "Significant")
-            "Reject H\u2080: significant allele-frequency differentiation among populations."
-          else
-            "Fail to reject H\u2080: no evidence of allele-frequency differentiation."
+      list(
+        global_tbl              = global_tbl,
+        per_locus_tbl           = per_locus_tbl,
+        pairwise_tbl            = pairwise_tbl,
+        G_null_global           = G_null_global,
+        G_null_per_locus        = perm_res$G_locus_perm,
+        G_null_pairwise         = g_perm_pairwise,
+        pval_convergence_global = pval_conv,
+        g_obs_global            = list(G = g_obs_overall),
+        g_obs_per_locus_vec     = g_obs_vec,
+        metadata = list(
+          n_perm       = n_perm,
+          conf_level   = conf_level,
+          do_global    = do_global,
+          do_per_locus = do_per_locus,
+          do_pairwise  = do_pairwise,
+          n_pops       = n_pops,
+          n_loci       = n_loci,
+          pop_names    = pop_names,
+          loci_names   = loci_names,
+          n_threads    = .n_threads()
         )
       )
-    )
-  })
-
-  ## Global null distribution plot ----
-  output$g_global_dist_plot <- renderPlot({
-    shiny::req(g_test_results())
-    res    <- g_test_results()
-    G_null <- res$G_null_global[is.finite(res$G_null_global)]
-    G_obs  <- res$g_obs_global$G
-    p_val  <- res$global_tbl$p_value[1]
-
-    shiny::validate(shiny::need(length(G_null) > 0 && is.finite(G_obs),
-                                "No permutation data available."))
-
-    label_p <- if (is.na(p_val)) "p = N/A" else
-      if (p_val < 0.0001) "p < 0.0001" else sprintf("p = %.4f", p_val)
-
-    ggplot2::ggplot(data.frame(G = G_null), ggplot2::aes(x = G)) +
-      ggplot2::geom_histogram(bins = 50, fill = "#c4b5fd", color = "#5b21b6", alpha = 0.8) +
-      ggplot2::geom_vline(xintercept = G_obs, color = "#dc2626",
-                          linewidth = 1.4, linetype = "solid") +
-      ggplot2::annotate("text", x = G_obs, y = Inf,
-                        label  = sprintf("G_obs = %.2f\n%s", G_obs, label_p),
-                        hjust  = -0.08, vjust = 1.5,
-                        color  = "#dc2626", fontface = "bold", size = 4) +
-      ggplot2::labs(
-        title    = "Null distribution of G (permutation)",
-        subtitle = sprintf("%d permutations \u2014 red line = observed G", length(G_null)),
-        x = "G-statistic", y = "Frequency"
-      ) +
-      ggplot2::theme_minimal() +
-      ggplot2::theme(
-        plot.title    = ggplot2::element_text(face = "bold", hjust = 0.5, color = "#5b21b6"),
-        plot.subtitle = ggplot2::element_text(hjust = 0.5, color = "#6b7280")
-      )
-  })
-
-  ## Per-locus table ----
-  output$g_per_locus_table <- DT::renderDT({
-    shiny::req(g_test_results())
-    df <- g_test_results()$per_locus_tbl
-    shiny::validate(shiny::need(is.data.frame(df) && nrow(df) > 0,
-                                "Per-locus test not computed."))
-    pretty <- c(Locus="Locus", G_obs="G observed", df="df",
-                p_value="p-value (raw)", q_value="q-value (FDR-BH)",
-                decision="Decision (\u03b1 = 0.05)")
-    DT::datatable(df, extensions="Buttons",
-      options = list(dom="Bfrtip", buttons=c("copy"), pageLength=25, scrollX=TRUE),
-      rownames=FALSE, colnames=unname(pretty[names(df)])
-    ) %>%
-      DT::formatRound(c("G_obs","p_value","q_value"), digits=4) %>%
-      DT::formatStyle("q_value",
-        backgroundColor = DT::styleInterval(c(0.01,0.05), c("#f8d7da","#fff3cd","white"))) %>%
-      DT::formatStyle("decision",
-        color      = DT::styleEqual(c("Significant","Not significant"), c("#721c24","#155724")),
-        fontWeight = "bold")
-  })
-
-  ## Per-locus bar plot ----
-  .make_g_per_locus_plot <- function() {
-    shiny::req(g_test_results())
-    df <- g_test_results()$per_locus_tbl %>%
-      dplyr::mutate(Significant = !is.na(q_value) & q_value < 0.05)
-    mean_df   <- mean(df$df, na.rm = TRUE)
-    threshold <- if (is.finite(mean_df) && mean_df > 0) qchisq(0.95, df = mean_df) else NA
-
-    p <- ggplot2::ggplot(df, ggplot2::aes(x = stats::reorder(Locus, -G_obs), y = G_obs)) +
-      ggplot2::geom_col(ggplot2::aes(fill = Significant), width = 0.7) +
-      ggplot2::scale_fill_manual(
-        values = c("TRUE" = "#dc2626", "FALSE" = "#c4b5fd"),
-        labels = c("Non-significant", "Significant (FDR < 0.05)"), name = ""
-      ) +
-      ggplot2::labs(title = "G-statistic per locus",
-                    subtitle = "Red = significant after FDR (BH) correction",
-                    x = "Locus", y = "G-statistic") +
-      ggplot2::theme_minimal() +
-      ggplot2::theme(
-        axis.text.x   = ggplot2::element_text(angle = 45, hjust = 1),
-        plot.title    = ggplot2::element_text(face = "bold", hjust = 0.5, color = "#5b21b6"),
-        plot.subtitle = ggplot2::element_text(hjust = 0.5, color = "#6b7280"),
-        legend.position = "top"
-      )
-    if (!is.na(threshold))
-      p <- p +
-        ggplot2::geom_hline(yintercept = threshold, linetype = "dashed",
-                            color = "#856404", linewidth = 0.8) +
-        ggplot2::annotate("text", x = Inf, y = threshold,
-                          label = sprintf("\u03c7\u00b2 threshold \u2248 %.2f", threshold),
-                          hjust = 1.1, vjust = -0.5, color = "#856404", size = 3)
-    p
-  }
-
-  output$g_per_locus_plot <- renderPlot({ .make_g_per_locus_plot() })
-
-  ## Pairwise matrix UI ----
-  output$g_pairwise_matrix_ui <- renderUI({
-    shiny::req(g_test_results())
-    res <- g_test_results()
-    if (is.null(res$pairwise_tbl) || nrow(res$pairwise_tbl) == 0)
-      return(tags$div(class = "alert alert-info", icon("info-circle"),
-        " Pairwise G-test not computed. Enable the checkbox and re-run."))
-
-    df        <- res$pairwise_tbl
-    pop_names <- res$metadata$pop_names
-    n_pops    <- length(pop_names)
-    G_mat     <- matrix(NA_real_, n_pops, n_pops, dimnames = list(pop_names, pop_names))
-    p_mat     <- matrix(NA_real_, n_pops, n_pops, dimnames = list(pop_names, pop_names))
-    for (i in seq_len(nrow(df))) {
-      G_mat[df$Pop1[i], df$Pop2[i]] <- df$G_obs[i]
-      G_mat[df$Pop2[i], df$Pop1[i]] <- df$G_obs[i]
-      p_mat[df$Pop1[i], df$Pop2[i]] <- df$p_value[i]
-      p_mat[df$Pop2[i], df$Pop1[i]] <- df$p_value[i]
     }
-    cells <- function(i, j) {
-      if (i == j) return('<td style="background:#f1f5f9; color:#94a3b8;">\u2014</td>')
-      v <- G_mat[i, j]; pv <- p_mat[i, j]
-      if (is.na(v)) return('<td style="color:#cbd5e1;">\u00b7</td>')
-      bg <- if (!is.na(pv) && pv < 0.001) "#f8d7da" else if (!is.na(pv) && pv < 0.05) "#fff3cd" else "#d4edda"
-      sprintf('<td style="background:%s; font-weight:600; text-align:center;">%.3f<br><small style="color:#475569;">p=%.4f</small></td>',
-              bg, v, if (is.na(pv)) NA else pv)
-    }
-    thead <- paste0('<tr><th style="background:#5b21b6; color:#fff; padding:4px;"></th>',
-                    paste(sprintf('<th style="background:#5b21b6; color:#fff; padding:4px;">%s</th>', pop_names), collapse=""),
-                    '</tr>')
-    tbody <- paste(sapply(seq_len(n_pops), function(i)
-      paste0('<tr><td style="background:#5b21b6; color:#fff; font-weight:700; padding:4px;">', pop_names[i], '</td>',
-            paste(sapply(seq_len(n_pops), function(j) cells(i, j)), collapse=""), '</tr>')), collapse="")
-    tags$div(
-      HTML(sprintf('<div style="overflow-x:auto;"><table style="border-collapse:collapse; font-size:12px; font-family:monospace;">%s%s</table></div>',
-                  thead, tbody)),
-      tags$div(style = "margin-top:10px; font-size:11px; color:#6b7280;",
-        tags$strong("Legend: "),
-        tags$span(style="background:#d4edda; padding:2px 8px;", "p \u2265 0.05"), " ",
-        tags$span(style="background:#fff3cd; padding:2px 8px;", "0.001 \u2264 p < 0.05"), " ",
-        tags$span(style="background:#f8d7da; padding:2px 8px;", "p < 0.001")
+
+    ## Observer: Run button ----
+    observeEvent(input$run_G_test, {
+      db_ready()
+
+      if (is.null(input$n_perm_g) || input$n_perm_g < 5000) {
+        showNotification("Minimum 5 000 permutations required.", type = "warning")
+        return(NULL)
+      }
+      if (!isTRUE(input$g_test_global) && !isTRUE(input$g_test_per_locus) &&
+          !isTRUE(input$g_test_pairwise)) {
+        showNotification("Select at least one test type.", type = "warning")
+        return(NULL)
+      }
+
+      waiter <- Waiter$new(
+        id    = c(session$ns("g_per_locus_table"), session$ns("g_global_dist_plot")),
+        html  = spin_3(),
+        color = transparent(0.7)
       )
-    )
-  })
+      waiter$show()
+      on.exit(waiter$hide(), add = TRUE)
 
-  ## Pairwise table ----
-  output$g_pairwise_table <- DT::renderDT({
-    shiny::req(g_test_results())
-    df <- g_test_results()$pairwise_tbl
-    if (is.null(df) || nrow(df) == 0)
-      return(DT::datatable(data.frame(Message = "Pairwise test not computed.")))
-    pretty <- c(Pop1="Population 1", Pop2="Population 2", G_obs="G observed",
-                df="df", p_value="p-value", decision="Decision (\u03b1 = 0.05)")
-    DT::datatable(df, extensions="Buttons",
-      options = list(dom="Bfrtip", buttons=c("copy"), pageLength=25, scrollX=TRUE),
-      rownames=FALSE, colnames=unname(pretty[names(df)])
-    ) %>%
-      DT::formatRound(c("G_obs","p_value"), digits=4) %>%
-      DT::formatStyle("p_value",
-        backgroundColor = DT::styleInterval(c(0.001,0.05), c("#f8d7da","#fff3cd","white")))
-  })
+      tryCatch({
+        start_time <- Sys.time()
+        shinyWidgets::updateProgressBar(session, "g_progress", value = 5)
 
-  ## Q-Q plot ----
-  output$g_qq_plot <- renderPlot({
-    shiny::req(g_test_results())
-    res    <- g_test_results()
-    G_null <- res$G_null_global[is.finite(res$G_null_global)]
-    df_g   <- res$g_obs_global$df
-    shiny::validate(shiny::need(length(G_null) >= 10 && is.finite(df_g) && df_g > 0,
-                                "Insufficient data for Q-Q plot."))
-    n    <- length(G_null)
-    prbs <- (seq_len(n) - 0.5) / n
-    ggplot2::ggplot(data.frame(th = qchisq(prbs, df = df_g), em = sort(G_null)),
-                    ggplot2::aes(x = th, y = em)) +
-      ggplot2::geom_point(size = 1.5, color = "#7c3aed", alpha = 0.7) +
-      ggplot2::geom_abline(intercept = 0, slope = 1, color = "#dc2626",
-                          linetype = "dashed", linewidth = 1) +
-      ggplot2::labs(
-        title    = "Q-Q plot: G null vs \u03c7\u00b2 theoretical",
-        subtitle = sprintf("df = %d \u2014 points on diagonal = good fit", df_g),
-        x = "Theoretical \u03c7\u00b2 quantiles", y = "Empirical G quantiles"
-      ) +
-      ggplot2::theme_minimal() +
-      ggplot2::theme(
-        plot.title    = ggplot2::element_text(face = "bold", hjust = 0.5, color = "#5b21b6"),
-        plot.subtitle = ggplot2::element_text(hjust = 0.5, color = "#6b7280")
-      )
-  })
+        results <- run_g_based_test(
+          n_perm       = as.integer(input$n_perm_g),
+          conf_level   = as.numeric(input$conf_level_g),
+          do_global    = isTRUE(input$g_test_global),
+          do_per_locus = isTRUE(input$g_test_per_locus),
+          do_pairwise  = isTRUE(input$g_test_pairwise)
+        )
 
-  ## P-value convergence plot ----
-  output$g_pvalue_convergence_plot <- renderPlot({
-    shiny::req(g_test_results())
-    pconv <- g_test_results()$pval_convergence_global
-    pconv <- pconv[is.finite(pconv)]
-    shiny::validate(shiny::need(length(pconv) >= 10, "Insufficient data."))
-    ggplot2::ggplot(data.frame(i = seq_along(pconv), p = pconv),
-                    ggplot2::aes(x = i, y = p)) +
-      ggplot2::geom_line(color = "#7c3aed", linewidth = 0.8) +
-      ggplot2::geom_hline(yintercept = 0.05, color = "#dc2626", linetype = "dashed") +
-      ggplot2::geom_hline(yintercept = 0.01, color = "#856404", linetype = "dotted") +
-      ggplot2::scale_y_log10() +
-      ggplot2::labs(title = "P-value convergence", subtitle = "Should stabilise well before last permutation",
-                    x = "Permutation number", y = "Cumulative p-value") +
-      ggplot2::theme_minimal() +
-      ggplot2::theme(
-        plot.title    = ggplot2::element_text(face = "bold", hjust = 0.5, color = "#5b21b6"),
-        plot.subtitle = ggplot2::element_text(hjust = 0.5, color = "#6b7280")
-      ) +
-      ggplot2::annotate("text", x = Inf, y = 0.05, label = "\u03b1 = 0.05",
-                        hjust = 1.1, vjust = -0.5, color = "#dc2626", size = 3) +
-      ggplot2::annotate("text", x = Inf, y = 0.01, label = "\u03b1 = 0.01",
-                        hjust = 1.1, vjust = -0.5, color = "#856404", size = 3)
-  })
+        shinyWidgets::updateProgressBar(session, "g_progress", value = 100)
 
-  ## Download handlers ----
-  output$download_g_global_csv <- downloadHandler(
-    filename = function() paste0("g_test_global_",    Sys.Date(), ".csv"),
-    content  = function(file) { shiny::req(g_test_results()); utils::write.csv(g_test_results()$global_tbl, file, row.names=FALSE) }
-  )
-  output$download_g_global_txt <- downloadHandler(
-    filename = function() paste0("g_test_global_",    Sys.Date(), ".txt"),
-    content  = function(file) { shiny::req(g_test_results()); utils::write.table(g_test_results()$global_tbl, file, sep="\t", row.names=FALSE, quote=FALSE) }
-  )
-  output$download_g_per_locus_csv <- downloadHandler(
-    filename = function() paste0("g_test_per_locus_", Sys.Date(), ".csv"),
-    content  = function(file) { shiny::req(g_test_results()); utils::write.csv(g_test_results()$per_locus_tbl, file, row.names=FALSE) }
-  )
-  output$download_g_per_locus_txt <- downloadHandler(
-    filename = function() paste0("g_test_per_locus_", Sys.Date(), ".txt"),
-    content  = function(file) { shiny::req(g_test_results()); utils::write.table(g_test_results()$per_locus_tbl, file, sep="\t", row.names=FALSE, quote=FALSE) }
-  )
-  output$download_g_per_locus_plot <- downloadHandler(
-    filename = function() paste0("g_test_per_locus_plot_", Sys.Date(), ".png"),
-    content  = function(file) { ggplot2::ggsave(file, plot = .make_g_per_locus_plot(), width=12, height=6, dpi=300) }
-  )
-  output$download_g_pairwise_csv <- downloadHandler(
-    filename = function() paste0("g_test_pairwise_",  Sys.Date(), ".csv"),
-    content  = function(file) {
+        duration <- round(as.numeric(difftime(Sys.time(), start_time, units = "secs")), 1)
+        g_test_timing(duration)
+        g_test_results(results)
+
+        showNotification(
+          sprintf("G-based test completed in %.1f s (%d permutations).",
+                  duration, input$n_perm_g),
+          type = "message"
+        )
+      }, error = function(e) {
+        g_test_results(NULL); g_test_timing(NULL)
+        showNotification(paste("Error in G-based test:", e$message), type = "error")
+      })
+    })
+
+    ## Value boxes ----
+
+    output$g_global_obs_box <- renderValueBox({
       shiny::req(g_test_results())
-      df <- g_test_results()$pairwise_tbl %||% data.frame(Message = "Not computed")
-      utils::write.csv(df, file, row.names=FALSE)
-    }
-  )
-  output$download_g_pairwise_txt <- downloadHandler(
-    filename = function() paste0("g_test_pairwise_",  Sys.Date(), ".txt"),
-    content  = function(file) {
+      G <- g_test_results()$g_obs_global$G
+      valueBox(
+        value    = if (is.na(G)) "N/A" else format(round(G, 2), nsmall = 2),
+        subtitle = HTML("<small>G<sub>obs</sub><br>Global statistic</small>"),
+        color    = "purple", icon = icon("chart-area"), width = NULL
+      )
+    })
+
+    output$g_global_pvalue_box <- renderValueBox({
       shiny::req(g_test_results())
-      df <- g_test_results()$pairwise_tbl %||% data.frame(Message = "Not computed")
-      utils::write.table(df, file, sep="\t", row.names=FALSE, quote=FALSE)
-    }
-  )
-  output$download_g_diagnostics_plot <- downloadHandler(
-    filename = function() paste0("g_test_diagnostics_", Sys.Date(), ".png"),
-    content  = function(file) {
+      p <- g_test_results()$global_tbl$p_value[1]
+      display <- if (is.na(p)) "N/A" else if (p < 0.0001) "< 0.0001" else
+                if (p < 0.001) "< 0.001" else format(round(p, 4), nsmall = 4)
+      color <- if (is.na(p)) "red" else if (p < 0.001) "red" else
+              if (p < 0.05) "yellow" else "green"
+      valueBox(
+        value    = display,
+        subtitle = HTML("<small>Global <i>p</i>-value<br>G permutation (one-sided)</small>"),
+        color    = color, icon = icon("balance-scale"), width = NULL
+      )
+    })
+
+    output$g_signif_loci_box <- renderValueBox({
+      shiny::req(g_test_results())
+      df  <- g_test_results()$per_locus_tbl
+      tot <- nrow(df)
+      sig <- sum(!is.na(df$q_value) & df$q_value < 0.05, na.rm = TRUE)
+      pct <- if (tot > 0) round(100 * sig / tot, 1) else 0
+      valueBox(
+        value    = paste0(sig, " / ", tot),
+        subtitle = HTML(paste0("<small>Significant loci (FDR&lt;0.05)<br>", pct, "% of total</small>")),
+        color    = if (sig > 0) "yellow" else "aqua",
+        icon     = icon("vial"), width = NULL
+      )
+    })
+
+    output$g_mean_pvalue_box <- renderValueBox({
+      shiny::req(g_test_results())
+      mp <- mean(g_test_results()$per_locus_tbl$p_value, na.rm = TRUE)
+      valueBox(
+        value    = if (is.na(mp)) "N/A" else format(round(mp, 4), nsmall = 4),
+        subtitle = HTML("<small>Mean <i>p</i>-value<br>Per-locus</small>"),
+        color    = "purple", icon = icon("calculator"), width = NULL
+      )
+    })
+
+    output$g_time_box <- renderValueBox({
+      shiny::req(g_test_timing())
+      sec <- g_test_timing()
+      valueBox(
+        value    = if (sec < 60) paste0(sec, " s") else paste0(round(sec / 60, 1), " min"),
+        subtitle = HTML("<small>Computation Time<br>G permutation</small>"),
+        color    = "light-blue", icon = icon("clock"), width = NULL
+      )
+    })
+
+    output$g_power_box <- renderValueBox({
+      shiny::req(g_test_results())
+      p     <- g_test_results()$global_tbl$p_value[1]
+      power <- if (is.na(p)) NA_real_ else 1 - p
+      valueBox(
+        value    = if (is.na(power)) "N/A" else paste0(round(100 * power, 1), "%"),
+        subtitle = HTML("<small>Power proxy<br>(1 \u2212 p-value)</small>"),
+        color    = "teal", icon = icon("bolt"), width = NULL
+      )
+    })
+
+    output$g_n_perm_box <- renderValueBox({
+      shiny::req(g_test_results())
+      n <- g_test_results()$metadata$n_perm
+      valueBox(
+        value    = format(n, big.mark = "\u202f"),
+        subtitle = HTML("<small>Permutations<br>performed</small>"),
+        color    = "light-blue", icon = icon("random"), width = NULL
+      )
+    })
+
+    output$g_fdr_box <- renderValueBox({
+      shiny::req(g_test_results())
+      med <- median(g_test_results()$per_locus_tbl$q_value, na.rm = TRUE)
+      valueBox(
+        value    = if (is.na(med)) "N/A" else format(round(med, 4), nsmall = 4),
+        subtitle = HTML("<small>Median q-value<br>FDR-BH (per locus)</small>"),
+        color    = "purple", icon = icon("filter"), width = NULL
+      )
+    })
+
+    ## Global result UI ----
+    output$g_global_result_ui <- renderUI({
+      shiny::req(g_test_results())
+      gt       <- g_test_results()$global_tbl
+      p        <- gt$p_value[1]
+      G        <- gt$G_obs[1]
+      decision <- gt$decision[1]
+      n_perm   <- gt$n_perm[1]
+
+      color <- if (is.na(p)) "#6c757d" else if (p < 0.001) "#721c24" else
+              if (p < 0.05) "#856404" else "#155724"
+      bg    <- if (is.na(p)) "#e2e3e5" else if (p < 0.001) "#f8d7da" else
+              if (p < 0.05) "#fff3cd" else "#d4edda"
+      p_fmt <- if (is.na(p)) "N/A" else if (p < 0.0001) "< 0.0001" else
+              format(round(p, 4), nsmall = 4)
+
+      tags$div(
+        style = sprintf("padding:15px; border-radius:8px; background:%s; border-left:5px solid %s;", bg, color),
+        tags$div(style = "font-size:14px; margin-bottom:8px;",
+          tags$strong("G = "), sprintf("%.4f", G),
+          tags$span(style = "margin-left:15px;", tags$strong("p-value = "), p_fmt),
+          tags$span(style = "margin-left:15px;", tags$strong("N perm = "),
+                    format(n_perm, big.mark = "\u202f"))
+        ),
+        tags$div(style = sprintf("font-size:16px; font-weight:bold; color:%s;", color),
+          icon(if (decision == "Significant") "check-circle" else "times-circle"),
+          " ", decision,
+          tags$small(style = "display:block; font-weight:normal; font-size:12px; margin-top:5px;",
+            if (decision == "Significant")
+              "Reject H\u2080: significant allele-frequency differentiation among populations."
+            else
+              "Fail to reject H\u2080: no evidence of allele-frequency differentiation."
+          )
+        )
+      )
+    })
+
+    ## Global null distribution plot ----
+    output$g_global_dist_plot <- renderPlot({
       shiny::req(g_test_results())
       res    <- g_test_results()
       G_null <- res$G_null_global[is.finite(res$G_null_global)]
-      df_g   <- res$g_obs_global$df
-      pconv  <- res$pval_convergence_global[is.finite(res$pval_convergence_global)]
-      png(file, width=1200, height=600, res=150)
-      par(mfrow=c(1,2), mar=c(4,4,3,1))
-      n <- length(G_null); prbs <- (seq_len(n)-0.5)/n
-      plot(qchisq(prbs, df=df_g), sort(G_null), pch=16, cex=0.5, col="#7c3aed",
-          xlab="Theoretical \u03c7\u00b2", ylab="Empirical G", main="Q-Q plot")
-      abline(0,1,col="red",lty=2,lwd=2)
-      plot(seq_along(pconv), pconv, type="l", col="#7c3aed", lwd=1.5,
-          xlab="Permutation", ylab="Cumulative p-value", main="P-value convergence", log="y")
-      abline(h=0.05,col="red",lty=2); abline(h=0.01,col="orange",lty=3)
-      dev.off()
-    }
-  )
-  # ═══ Fin G-based permutation test ═══════════════════════════════════════
+      G_obs  <- res$g_obs_global$G
+      p_val  <- res$global_tbl$p_value[1]
 
-  ###
-  
+      shiny::validate(shiny::need(length(G_null) > 0 && is.finite(G_obs),
+                                  "No permutation data available."))
+
+      label_p <- if (is.na(p_val)) "p = N/A" else
+                if (p_val < 0.0001) "p < 0.0001" else sprintf("p = %.4f", p_val)
+
+      ggplot2::ggplot(data.frame(G = G_null), ggplot2::aes(x = G)) +
+        ggplot2::geom_histogram(bins = 50, fill = "#c4b5fd", color = "#5b21b6", alpha = 0.8) +
+        ggplot2::geom_vline(xintercept = G_obs, color = "#dc2626",
+                            linewidth = 1.4, linetype = "solid") +
+        ggplot2::annotate("text", x = G_obs, y = Inf,
+                          label  = sprintf("G_obs = %.2f\n%s", G_obs, label_p),
+                          hjust  = -0.08, vjust = 1.5,
+                          color  = "#dc2626", fontface = "bold", size = 4) +
+        ggplot2::labs(
+          title    = "Null distribution of G (permutation)",
+          subtitle = sprintf("%d permutations \u2014 red line = observed G", length(G_null)),
+          x = "G-statistic", y = "Frequency"
+        ) +
+        ggplot2::theme_minimal() +
+        ggplot2::theme(
+          plot.title    = ggplot2::element_text(face = "bold", hjust = 0.5, color = "#5b21b6"),
+          plot.subtitle = ggplot2::element_text(hjust = 0.5, color = "#6b7280")
+        )
+    })
+
+    ## Per-locus table ----
+    output$g_per_locus_table <- DT::renderDT({
+      shiny::req(g_test_results())
+      df <- g_test_results()$per_locus_tbl
+      shiny::validate(shiny::need(is.data.frame(df) && nrow(df) > 0,
+                                  "Per-locus test not computed."))
+      pretty <- c(Locus   = "Locus",    G_obs   = "G observed",
+                  p_value = "p-value (raw)", q_value = "q-value (FDR-BH)",
+                  decision = "Decision (\u03b1 = 0.05)")
+      DT::datatable(df, extensions = "Buttons",
+        options = list(dom = "Bfrtip", buttons = c("copy"), pageLength = 25, scrollX = TRUE),
+        rownames = FALSE, colnames = unname(pretty[names(df)])
+      ) %>%
+        DT::formatRound(c("G_obs", "p_value", "q_value"), digits = 4) %>%
+        DT::formatStyle("q_value",
+          backgroundColor = DT::styleInterval(c(0.01, 0.05), c("#f8d7da", "#fff3cd", "white"))) %>%
+        DT::formatStyle("decision",
+          color      = DT::styleEqual(c("Significant", "Not significant"), c("#721c24", "#155724")),
+          fontWeight = "bold")
+    })
+
+    ## Per-locus bar plot ----
+    .make_g_per_locus_plot <- function() {
+      shiny::req(g_test_results())
+      df <- g_test_results()$per_locus_tbl %>%
+        dplyr::mutate(Significant = !is.na(q_value) & q_value < 0.05)
+
+      p <- ggplot2::ggplot(df, ggplot2::aes(x = stats::reorder(Locus, -G_obs), y = G_obs)) +
+        ggplot2::geom_col(ggplot2::aes(fill = Significant), width = 0.7) +
+        ggplot2::scale_fill_manual(
+          values = c("TRUE" = "#dc2626", "FALSE" = "#c4b5fd"),
+          labels = c("Non-significant", "Significant (FDR < 0.05)"), name = ""
+        ) +
+        ggplot2::labs(title    = "G-statistic per locus",
+                      subtitle = "Red = significant after FDR (BH) correction",
+                      x = "Locus", y = "G-statistic") +
+        ggplot2::theme_minimal() +
+        ggplot2::theme(
+          axis.text.x     = ggplot2::element_text(angle = 45, hjust = 1),
+          plot.title      = ggplot2::element_text(face = "bold", hjust = 0.5, color = "#5b21b6"),
+          plot.subtitle   = ggplot2::element_text(hjust = 0.5, color = "#6b7280"),
+          legend.position = "top"
+        )
+      p
+    }
+
+    output$g_per_locus_plot <- renderPlot({ .make_g_per_locus_plot() })
+
+    ## Pairwise matrix UI ----
+    output$g_pairwise_matrix_ui <- renderUI({
+      shiny::req(g_test_results())
+      res <- g_test_results()
+      if (is.null(res$pairwise_tbl) || nrow(res$pairwise_tbl) == 0)
+        return(tags$div(class = "alert alert-info", icon("info-circle"),
+          " Pairwise G-test not computed. Enable the checkbox and re-run."))
+
+      df        <- res$pairwise_tbl
+      pop_names <- res$metadata$pop_names
+      n_pops    <- length(pop_names)
+      G_mat     <- matrix(NA_real_, n_pops, n_pops, dimnames = list(pop_names, pop_names))
+      p_mat     <- matrix(NA_real_, n_pops, n_pops, dimnames = list(pop_names, pop_names))
+      for (i in seq_len(nrow(df))) {
+        G_mat[df$Pop1[i], df$Pop2[i]] <- df$G_obs[i]
+        G_mat[df$Pop2[i], df$Pop1[i]] <- df$G_obs[i]
+        p_mat[df$Pop1[i], df$Pop2[i]] <- df$p_value[i]
+        p_mat[df$Pop2[i], df$Pop1[i]] <- df$p_value[i]
+      }
+      cells <- function(i, j) {
+        if (i == j) return('<td style="background:#f1f5f9; color:#94a3b8;">\u2014</td>')
+        v <- G_mat[i, j]; pv <- p_mat[i, j]
+        if (is.na(v)) return('<td style="color:#cbd5e1;">\u00b7</td>')
+        bg <- if (!is.na(pv) && pv < 0.001) "#f8d7da" else
+              if (!is.na(pv) && pv < 0.05) "#fff3cd" else "#d4edda"
+        sprintf('<td style="background:%s; font-weight:600; text-align:center;">%.3f<br><small style="color:#475569;">p=%.4f</small></td>',
+                bg, v, if (is.na(pv)) NA else pv)
+      }
+      thead <- paste0('<tr><th style="background:#5b21b6; color:#fff; padding:4px;"></th>',
+                      paste(sprintf('<th style="background:#5b21b6; color:#fff; padding:4px;">%s</th>',
+                                    pop_names), collapse = ""), '</tr>')
+      tbody <- paste(sapply(seq_len(n_pops), function(i)
+        paste0('<tr><td style="background:#5b21b6; color:#fff; font-weight:700; padding:4px;">',
+              pop_names[i], '</td>',
+              paste(sapply(seq_len(n_pops), function(j) cells(i, j)), collapse = ""),
+              '</tr>')), collapse = "")
+      tags$div(
+        HTML(sprintf('<div style="overflow-x:auto;"><table style="border-collapse:collapse; font-size:12px; font-family:monospace;">%s%s</table></div>',
+                    thead, tbody)),
+        tags$div(style = "margin-top:10px; font-size:11px; color:#6b7280;",
+          tags$strong("Legend: "),
+          tags$span(style = "background:#d4edda; padding:2px 8px;", "p \u2265 0.05"), " ",
+          tags$span(style = "background:#fff3cd; padding:2px 8px;", "0.001 \u2264 p < 0.05"), " ",
+          tags$span(style = "background:#f8d7da; padding:2px 8px;", "p < 0.001")
+        )
+      )
+    })
+
+    ## Pairwise table ----
+    output$g_pairwise_table <- DT::renderDT({
+      shiny::req(g_test_results())
+      df <- g_test_results()$pairwise_tbl
+      if (is.null(df) || nrow(df) == 0)
+        return(DT::datatable(data.frame(Message = "Pairwise test not computed.")))
+      pretty <- c(Pop1 = "Population 1", Pop2 = "Population 2",
+                  G_obs = "G observed", p_value = "p-value",
+                  decision = "Decision (\u03b1 = 0.05)")
+      DT::datatable(df, extensions = "Buttons",
+        options = list(dom = "Bfrtip", buttons = c("copy"), pageLength = 25, scrollX = TRUE),
+        rownames = FALSE, colnames = unname(pretty[names(df)])
+      ) %>%
+        DT::formatRound(c("G_obs", "p_value"), digits = 4) %>%
+        DT::formatStyle("p_value",
+          backgroundColor = DT::styleInterval(c(0.001, 0.05), c("#f8d7da", "#fff3cd", "white")))
+    })
+
+    ## Q-Q plot ----
+    output$g_qq_plot <- renderPlot({
+      shiny::req(g_test_results())
+      G_null <- g_test_results()$G_null_global
+      G_null <- G_null[is.finite(G_null)]
+      # df approximation: mean of per-locus df (sum / n_loci)
+      df_g   <- mean(sapply(seq_len(ncol(g_test_results()$G_null_per_locus)),
+                            function(j) {
+                              v <- g_test_results()$G_null_per_locus[, j]
+                              mean(v[is.finite(v)], na.rm = TRUE)
+                            }), na.rm = TRUE)
+
+      shiny::validate(shiny::need(length(G_null) >= 10 && is.finite(df_g) && df_g > 0,
+                                  "Insufficient data for Q-Q plot."))
+      n    <- length(G_null)
+      prbs <- (seq_len(n) - 0.5) / n
+      ggplot2::ggplot(data.frame(th = qchisq(prbs, df = df_g), em = sort(G_null)),
+                      ggplot2::aes(x = th, y = em)) +
+        ggplot2::geom_point(size = 1.5, color = "#7c3aed", alpha = 0.7) +
+        ggplot2::geom_abline(intercept = 0, slope = 1, color = "#dc2626",
+                            linetype = "dashed", linewidth = 1) +
+        ggplot2::labs(title    = "Q-Q plot: G null vs \u03c7\u00b2 theoretical",
+                      subtitle = sprintf("df \u2248 %.0f \u2014 points on diagonal = good fit", df_g),
+                      x = "Theoretical \u03c7\u00b2 quantiles", y = "Empirical G quantiles") +
+        ggplot2::theme_minimal() +
+        ggplot2::theme(
+          plot.title    = ggplot2::element_text(face = "bold", hjust = 0.5, color = "#5b21b6"),
+          plot.subtitle = ggplot2::element_text(hjust = 0.5, color = "#6b7280")
+        )
+    })
+
+    ## P-value convergence plot ----
+    output$g_pvalue_convergence_plot <- renderPlot({
+      shiny::req(g_test_results())
+      pconv <- g_test_results()$pval_convergence_global
+      pconv <- pconv[is.finite(pconv)]
+      shiny::validate(shiny::need(length(pconv) >= 10, "Insufficient data."))
+      ggplot2::ggplot(data.frame(i = seq_along(pconv), p = pconv),
+                      ggplot2::aes(x = i, y = p)) +
+        ggplot2::geom_line(color = "#7c3aed", linewidth = 0.8) +
+        ggplot2::geom_hline(yintercept = 0.05, color = "#dc2626", linetype = "dashed") +
+        ggplot2::geom_hline(yintercept = 0.01, color = "#856404", linetype = "dotted") +
+        ggplot2::scale_y_log10() +
+        ggplot2::labs(title    = "P-value convergence",
+                      subtitle = "Should stabilise well before last permutation",
+                      x = "Permutation number", y = "Cumulative p-value") +
+        ggplot2::theme_minimal() +
+        ggplot2::theme(
+          plot.title    = ggplot2::element_text(face = "bold", hjust = 0.5, color = "#5b21b6"),
+          plot.subtitle = ggplot2::element_text(hjust = 0.5, color = "#6b7280")
+        ) +
+        ggplot2::annotate("text", x = Inf, y = 0.05, label = "\u03b1 = 0.05",
+                          hjust = 1.1, vjust = -0.5, color = "#dc2626", size = 3) +
+        ggplot2::annotate("text", x = Inf, y = 0.01, label = "\u03b1 = 0.01",
+                          hjust = 1.1, vjust = -0.5, color = "#856404", size = 3)
+    })
+
+    ## Download handlers ----
+    output$download_g_global_csv <- downloadHandler(
+      filename = function() paste0("g_test_global_",       Sys.Date(), ".csv"),
+      content  = function(f) { shiny::req(g_test_results()); utils::write.csv(g_test_results()$global_tbl, f, row.names = FALSE) }
+    )
+    output$download_g_global_txt <- downloadHandler(
+      filename = function() paste0("g_test_global_",       Sys.Date(), ".txt"),
+      content  = function(f) { shiny::req(g_test_results()); utils::write.table(g_test_results()$global_tbl, f, sep = "\t", row.names = FALSE, quote = FALSE) }
+    )
+    output$download_g_per_locus_csv <- downloadHandler(
+      filename = function() paste0("g_test_per_locus_",    Sys.Date(), ".csv"),
+      content  = function(f) { shiny::req(g_test_results()); utils::write.csv(g_test_results()$per_locus_tbl, f, row.names = FALSE) }
+    )
+    output$download_g_per_locus_txt <- downloadHandler(
+      filename = function() paste0("g_test_per_locus_",    Sys.Date(), ".txt"),
+      content  = function(f) { shiny::req(g_test_results()); utils::write.table(g_test_results()$per_locus_tbl, f, sep = "\t", row.names = FALSE, quote = FALSE) }
+    )
+    output$download_g_per_locus_plot <- downloadHandler(
+      filename = function() paste0("g_test_per_locus_plot_", Sys.Date(), ".png"),
+      content  = function(f) { ggplot2::ggsave(f, plot = .make_g_per_locus_plot(), width = 12, height = 6, dpi = 300) }
+    )
+    output$download_g_pairwise_csv <- downloadHandler(
+      filename = function() paste0("g_test_pairwise_",     Sys.Date(), ".csv"),
+      content  = function(f) {
+        shiny::req(g_test_results())
+        df <- g_test_results()$pairwise_tbl %||% data.frame(Message = "Not computed")
+        utils::write.csv(df, f, row.names = FALSE)
+      }
+    )
+    output$download_g_pairwise_txt <- downloadHandler(
+      filename = function() paste0("g_test_pairwise_",     Sys.Date(), ".txt"),
+      content  = function(f) {
+        shiny::req(g_test_results())
+        df <- g_test_results()$pairwise_tbl %||% data.frame(Message = "Not computed")
+        utils::write.table(df, f, sep = "\t", row.names = FALSE, quote = FALSE)
+      }
+    )
+    output$download_g_diagnostics_plot <- downloadHandler(
+      filename = function() paste0("g_test_diagnostics_",  Sys.Date(), ".png"),
+      content  = function(file) {
+        shiny::req(g_test_results())
+        res    <- g_test_results()
+        G_null <- res$G_null_global[is.finite(res$G_null_global)]
+        pconv  <- res$pval_convergence_global[is.finite(res$pval_convergence_global)]
+        df_g   <- mean(sapply(seq_len(ncol(res$G_null_per_locus)), function(j) {
+          v <- res$G_null_per_locus[, j]; mean(v[is.finite(v)], na.rm = TRUE)
+        }), na.rm = TRUE)
+        png(file, width = 1200, height = 600, res = 150)
+        par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+        n <- length(G_null); prbs <- (seq_len(n) - 0.5) / n
+        plot(qchisq(prbs, df = df_g), sort(G_null), pch = 16, cex = 0.5, col = "#7c3aed",
+            xlab = "Theoretical \u03c7\u00b2", ylab = "Empirical G", main = "Q-Q plot")
+        abline(0, 1, col = "red", lty = 2, lwd = 2)
+        plot(seq_along(pconv), pconv, type = "l", col = "#7c3aed", lwd = 1.5, log = "y",
+            xlab = "Permutation", ylab = "Cumulative p-value", main = "P-value convergence")
+        abline(h = 0.05, col = "red", lty = 2); abline(h = 0.01, col = "orange", lty = 3)
+        dev.off()
+      }
+    )
+    # ═══ Fin G-based permutation test ════════════════════════════════════════
+
+    ###
   })
-  
-  
+ 
 }

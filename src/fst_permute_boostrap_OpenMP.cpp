@@ -1573,4 +1573,325 @@ List boot_indiv_hs_cpp(
     _["boot_type"]       = "individual",
     _["n_boot"]          = B
   );
+
+  
+}
+
+// ============================================================================
+// Export: G-based permutation test (parallel, pop-label shuffle)
+// Uses the same permutation kernel as batch_permute_wc84_fst_parallel
+// but returns only G statistics (global + per-locus).
+// ============================================================================
+// [[Rcpp::export]]
+List batch_permute_g_stat_parallel(
+    const IntegerMatrix& dat,
+    int    pop_col_1based = 1,
+    int    missing_code   = 0,
+    int    base           = 1000,
+    int    B              = 5000,
+    int    n_threads      = 1,
+    double seed           = 1.0
+) {
+  const int n = dat.nrow();
+  const int p = dat.ncol();
+  if (p < 2) stop("Need at least 2 columns: pop + >=1 locus.");
+  if (B <= 0) stop("B must be positive.");
+  if (base <= 1) stop("base must be > 1.");
+
+  const int pop_col = pop_col_1based - 1;
+  if (pop_col < 0 || pop_col >= p) stop("pop_col out of range.");
+
+  const int L = p - 1;
+
+  // ── 1) Observed G (per-locus + global) ──────────────────────────────
+  NumericVector g_obs(L, NA_REAL);
+  int out_col = 0;
+  for (int j = 0; j < p; ++j) {
+    if (j == pop_col) continue;
+    g_obs[out_col] = g_stat_differentiation_locus_ptr_ld(
+      dat.begin(), n, n, p, j, pop_col, missing_code, base);
+    out_col++;
+  }
+  const double g_obs_overall = g_stat_all_loci_ptr_ld(
+    dat.begin(), n, n, p, pop_col, missing_code, base);
+
+  // ── 2) Permutation buffers ────────────────────────────────────────────
+  std::vector<double> g_perm_buf((size_t)B * (size_t)L, NA_REAL);
+  std::vector<double> g_overall_buf((size_t)B, NA_REAL);
+
+  const uint64_t seed0 = seed0_from_double(seed);
+
+  int T = std::max(1, n_threads);
+#ifndef _OPENMP
+  T = 1;
+#endif
+#ifdef _OPENMP
+  omp_set_num_threads(T);
+#pragma omp parallel
+#endif
+  {
+    std::vector<int> pm((size_t)n * (size_t)p);
+    std::vector<double> g_tmp((size_t)L, NA_REAL);
+
+#ifdef _OPENMP
+#pragma omp for schedule(static)
+#endif
+    for (int b = 0; b < B; ++b) {
+      // Per-replicate seed (same pattern as other kernels)
+      const uint64_t sb = seed0 + 0x9e3779b97f4a7c15ULL * (uint64_t)(b + 1);
+      std::mt19937_64 rng(sb);
+
+      // Copy + permute population labels
+      std::memcpy(pm.data(), dat.begin(), sizeof(int) * (size_t)n * (size_t)p);
+      permute_pop_labels_once_rng_buf(pm.data(), n, p, pop_col, rng);
+
+      // Per-locus G on permuted matrix
+      int oc = 0;
+      for (int j = 0; j < p; ++j) {
+        if (j == pop_col) continue;
+        g_tmp[oc] = g_stat_differentiation_locus_ptr_ld(
+          pm.data(), n, n, p, j, pop_col, missing_code, base);
+        oc++;
+      }
+
+      // Global G on permuted matrix
+      g_overall_buf[(size_t)b] = g_stat_all_loci_ptr_ld(
+        pm.data(), n, n, p, pop_col, missing_code, base);
+
+      const size_t row0 = (size_t)b * (size_t)L;
+      for (int ell = 0; ell < L; ++ell)
+        g_perm_buf[row0 + (size_t)ell] = g_tmp[(size_t)ell];
+    }
+  }
+
+  // ── 3) Materialize permutation matrices ───────────────────────────────
+  NumericMatrix g_perm(B, L);
+  NumericVector g_overall_perm(B, NA_REAL);
+  for (int b = 0; b < B; ++b) {
+    g_overall_perm[b] = g_overall_buf[(size_t)b];
+    const size_t row0 = (size_t)b * (size_t)L;
+    for (int ell = 0; ell < L; ++ell)
+      g_perm(b, ell) = g_perm_buf[row0 + (size_t)ell];
+  }
+
+  // ── 4) Per-locus p-values (one-sided: G_perm >= G_obs) ───────────────
+  NumericVector p_G(L, NA_REAL);
+  for (int ell = 0; ell < L; ++ell) {
+    const double obs = g_obs[ell];
+    if (!std::isfinite(obs)) continue;
+    int count = 0, valid = 0;
+    for (int b = 0; b < B; ++b) {
+      const double v = g_perm(b, ell);
+      if (!std::isfinite(v)) continue;
+      ++valid;
+      if (v >= obs) ++count;
+    }
+    if (valid > 0) p_G[ell] = (1.0 + count) / ((double)valid + 1.0);
+  }
+
+  // ── 5) Global p-value ─────────────────────────────────────────────────
+  double p_G_overall = NA_REAL;
+  if (std::isfinite(g_obs_overall)) {
+    int count = 0, valid = 0;
+    for (int b = 0; b < B; ++b) {
+      const double v = g_overall_buf[(size_t)b];
+      if (!std::isfinite(v)) continue;
+      ++valid;
+      if (v >= g_obs_overall) ++count;
+    }
+    if (valid > 0) p_G_overall = (1.0 + count) / ((double)valid + 1.0);
+  }
+
+  // ── 6) Locus names ────────────────────────────────────────────────────
+  CharacterVector loc_names;
+  locus_names_from_colnames(dat, pop_col, loc_names);
+  colnames(g_perm) = loc_names;
+  g_obs.attr("names") = loc_names;
+  p_G.attr("names")   = loc_names;
+
+  return List::create(
+    _["G_locus_obs"]    = g_obs,
+    _["G_overall_obs"]  = g_obs_overall,
+    _["G_locus_perm"]   = g_perm,
+    _["G_overall_perm"] = g_overall_perm,
+    _["p_G"]            = p_G,
+    _["p_G_overall"]    = p_G_overall,
+    _["locus_names"]    = loc_names,
+    _["n_perm"]         = B,
+    _["n_threads"]      = T,
+    _["seed"]           = seed
+  );
+}
+
+// ============================================================================
+// Export: pairwise G-test (parallel, pop-label shuffle within each pair)
+// ============================================================================
+// [[Rcpp::export]]
+List batch_permute_g_stat_pairwise_parallel(
+    const IntegerMatrix& dat,
+    int    pop_col_1based = 1,
+    int    missing_code   = 0,
+    int    base           = 1000,
+    int    B              = 5000,
+    int    n_threads      = 1,
+    double seed           = 1.0
+) {
+  const int n = dat.nrow();
+  const int p = dat.ncol();
+  if (p < 2) stop("Need at least 2 columns.");
+  if (B <= 0) stop("B must be positive.");
+  if (base <= 1) stop("base must be > 1.");
+
+  const int pop_col = pop_col_1based - 1;
+  if (pop_col < 0 || pop_col >= p) stop("pop_col out of range.");
+
+  // Identify populations
+  std::unordered_map<int,int> pop_to_idx;
+  std::vector<int> pop_labels_vec;
+  for (int i = 0; i < n; ++i) {
+    const int code = dat(i, pop_col);
+    if (pop_to_idx.find(code) == pop_to_idx.end()) {
+      pop_to_idx[code] = (int)pop_labels_vec.size();
+      pop_labels_vec.push_back(code);
+    }
+  }
+  std::sort(pop_labels_vec.begin(), pop_labels_vec.end());
+  const int n_pops = (int)pop_labels_vec.size();
+  if (n_pops < 2) stop("Need at least 2 populations.");
+
+  // Build row indices per population
+  std::vector<std::vector<int>> pop_rows(n_pops);
+  for (int i = 0; i < n; ++i) {
+    const int code = dat(i, pop_col);
+    const int idx = (int)(std::find(pop_labels_vec.begin(), pop_labels_vec.end(), code)
+                           - pop_labels_vec.begin());
+    pop_rows[(size_t)idx].push_back(i);
+  }
+
+  // All pairs
+  std::vector<std::pair<int,int>> pairs;
+  for (int a = 0; a < n_pops - 1; ++a)
+    for (int b2 = a + 1; b2 < n_pops; ++b2)
+      pairs.push_back({a, b2});
+
+  const int n_pairs = (int)pairs.size();
+
+  // Observed G per pair (using full dat, subsetted to pair rows)
+  NumericVector g_obs_pairs(n_pairs, NA_REAL);
+  IntegerVector pop1_idx(n_pairs), pop2_idx(n_pairs);
+  for (int k = 0; k < n_pairs; ++k) {
+    const int pa = pairs[(size_t)k].first;
+    const int pb = pairs[(size_t)k].second;
+    pop1_idx[k] = pop_labels_vec[(size_t)pa];
+    pop2_idx[k] = pop_labels_vec[(size_t)pb];
+
+    const auto& ra = pop_rows[(size_t)pa];
+    const auto& rb = pop_rows[(size_t)pb];
+
+    // Build sub-matrix for this pair
+    const int n_sub = (int)(ra.size() + rb.size());
+    std::vector<int> sub((size_t)n_sub * (size_t)p);
+    int rr = 0;
+    for (int idx : ra) {
+      for (int j = 0; j < p; ++j)
+        mat_set_colmajor(sub.data(), n_sub, rr, j,
+                         mat_get_colmajor(dat.begin(), n, idx, j));
+      mat_set_colmajor(sub.data(), n_sub, rr, pop_col, 1);
+      rr++;
+    }
+    for (int idx : rb) {
+      for (int j = 0; j < p; ++j)
+        mat_set_colmajor(sub.data(), n_sub, rr, j,
+                         mat_get_colmajor(dat.begin(), n, idx, j));
+      mat_set_colmajor(sub.data(), n_sub, rr, pop_col, 2);
+      rr++;
+    }
+    g_obs_pairs[k] = g_stat_all_loci_ptr_ld(
+      sub.data(), n_sub, n_sub, p, pop_col, missing_code, base);
+  }
+
+  // Permutation buffers
+  std::vector<double> g_perm_buf((size_t)B * (size_t)n_pairs, NA_REAL);
+  const uint64_t seed0 = seed0_from_double(seed);
+
+  int T = std::max(1, n_threads);
+#ifndef _OPENMP
+  T = 1;
+#endif
+#ifdef _OPENMP
+  omp_set_num_threads(T);
+#pragma omp parallel
+#endif
+  {
+#ifdef _OPENMP
+#pragma omp for schedule(static)
+#endif
+    for (int b = 0; b < B; ++b) {
+      const uint64_t sb = seed0 + 0x9e3779b97f4a7c15ULL * (uint64_t)(b + 1);
+      std::mt19937_64 rng(sb);
+
+      const size_t row0 = (size_t)b * (size_t)n_pairs;
+
+      for (int k = 0; k < n_pairs; ++k) {
+        const int pa = pairs[(size_t)k].first;
+        const int pb = pairs[(size_t)k].second;
+        const auto& ra = pop_rows[(size_t)pa];
+        const auto& rb = pop_rows[(size_t)pb];
+        const int n_sub = (int)(ra.size() + rb.size());
+
+        std::vector<int> sub((size_t)n_sub * (size_t)p);
+        int rr = 0;
+        for (int idx : ra) {
+          for (int j = 0; j < p; ++j)
+            mat_set_colmajor(sub.data(), n_sub, rr, j,
+                             mat_get_colmajor(dat.begin(), n, idx, j));
+          mat_set_colmajor(sub.data(), n_sub, rr, pop_col, 1);
+          rr++;
+        }
+        for (int idx : rb) {
+          for (int j = 0; j < p; ++j)
+            mat_set_colmajor(sub.data(), n_sub, rr, j,
+                             mat_get_colmajor(dat.begin(), n, idx, j));
+          mat_set_colmajor(sub.data(), n_sub, rr, pop_col, 2);
+          rr++;
+        }
+
+        // Shuffle pop labels within this pair's sub-matrix
+        permute_pop_labels_once_rng_buf(sub.data(), n_sub, p, pop_col, rng);
+
+        g_perm_buf[row0 + (size_t)k] = g_stat_all_loci_ptr_ld(
+          sub.data(), n_sub, n_sub, p, pop_col, missing_code, base);
+      }
+    }
+  }
+
+  // Materialize + p-values
+  NumericMatrix g_perm_pairs(B, n_pairs);
+  NumericVector p_G_pairs(n_pairs, NA_REAL);
+
+  for (int k = 0; k < n_pairs; ++k) {
+    const double obs = g_obs_pairs[k];
+    int count = 0, valid = 0;
+    for (int b = 0; b < B; ++b) {
+      const double v = g_perm_buf[(size_t)b * (size_t)n_pairs + (size_t)k];
+      g_perm_pairs(b, k) = v;
+      if (!std::isfinite(v)) continue;
+      ++valid;
+      if (std::isfinite(obs) && v >= obs) ++count;
+    }
+    if (valid > 0 && std::isfinite(obs))
+      p_G_pairs[k] = (1.0 + count) / ((double)valid + 1.0);
+  }
+
+  return List::create(
+    _["G_obs"]       = g_obs_pairs,
+    _["G_perm"]      = g_perm_pairs,
+    _["p_G"]         = p_G_pairs,
+    _["pop1_code"]   = pop1_idx,
+    _["pop2_code"]   = pop2_idx,
+    _["n_pairs"]     = n_pairs,
+    _["n_perm"]      = B,
+    _["n_threads"]   = T,
+    _["seed"]        = seed
+  );
 }
