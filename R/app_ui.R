@@ -652,7 +652,7 @@ app_ui <- function() {
           <text x="0" y="85" fill="#F4F6FF" font-size="65" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="300" letter-spacing="-1.5">ShinyPopGen V1</text>
           <text x="0" y="175" fill="url(#hero-tg)" font-size="65" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="500" letter-spacing="-2">SPG-V1</text>
           <line x1="0" y1="210" x2="300" y2="210" stroke="#7074D8" stroke-width="2"/>
-          <text x="2" y="240" fill="#F4F6FF" font-size="16" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400">
+          <text x="2" y="240" fill="#F4F6FF" font-size="18" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400">
             <tspan x="2" dy="0">A Versatile, user-friendly and multi-OS application</tspan>
             <tspan x="2" dy="22">to analyse population genetic data</tspan>
           </text>
