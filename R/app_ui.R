@@ -649,22 +649,23 @@ app_ui <- function() {
               <stop offset="100%" stop-color="#5AA7FF"/>
             </linearGradient>
           </defs>
-          <text x="0" y="102" fill="#F4F6FF" font-size="102" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="300" letter-spacing="-1.5">Shiny</text>
-          <text x="0" y="214" fill="url(#hero-tg)" font-size="104" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="500" letter-spacing="-2">PopGen</text>
+          <text x="0" y="102" fill="#F4F6FF" font-size="102" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="300" letter-spacing="-1.5">ShinyPopGen V1</text>
+          <text x="0" y="214" fill="url(#hero-tg)" font-size="104" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="500" letter-spacing="-2">SPG-V1</text>
           <line x1="0" y1="254" x2="328" y2="254" stroke="#7074D8" stroke-width="2"/>
-          <text x="2" y="315" fill="#A8ACF8" font-size="31" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400" letter-spacing="7.5">POPULATION GENETICS</text>
+          <text x="2" y="315" fill="#A8ACF8" font-size="31" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400" letter-spacing="7.5">A Versatile, user-friendly and multi-OS application 
+to analyse population genetic data</text>
           <rect x="2"   y="334" width="72" height="12" rx="6" fill="#6F67F5"/>
           <rect x="86"  y="334" width="72" height="12" rx="6" fill="#7F76FF"/>
           <rect x="172" y="334" width="72" height="12" rx="6" fill="#17B08B"/>
           <rect x="258" y="334" width="42" height="12" rx="6" fill="#C45D34"/>
           <rect x="314" y="334" width="72" height="12" rx="6" fill="#9A650E"/>
           <rect x="400" y="334" width="96" height="12" rx="6" fill="#5F56CA"/>
-          <text x="2" y="390" fill="#787BD3" font-size="28" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400" letter-spacing="2.8">IRD \u00b7 CIRAD \u00b7 INTERTRYP</text>
+          <text x="2" y="390" fill="#787BD3" font-size="28" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400" letter-spacing="2.8">IRD \u00b7 UCAD \u00b7 CIRAD \u00b7 INTERTRYP</text>
         </svg>'),
         shiny::tags$button(
           class   = "spg-cta",
           onclick = "document.querySelector('[data-value=\"import\"]').click();",
-          shiny::icon("upload"), " Load your dataset"
+          shiny::icon("upload"), " Launch "
         )
       ),
       # Right: big logo
