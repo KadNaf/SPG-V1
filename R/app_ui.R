@@ -652,7 +652,7 @@ app_ui <- function() {
           <text x="0" y="102" fill="#F4F6FF" font-size="75" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="300" letter-spacing="-1.5">ShinyPopGen V1</text>
           <text x="0" y="214" fill="url(#hero-tg)" font-size="75" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="500" letter-spacing="-2">SPG-V1</text>
           <line x1="0" y1="254" x2="328" y2="254" stroke="#7074D8" stroke-width="2"/>
-          <text x="2" y="315" fill="#A8ACF8" font-size="10" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400" letter-spacing="7.5">A Versatile, user-friendly and multi-OS application 
+          <text x="2" y="315" fill="##F4F6FF" font-size="10" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400">A Versatile, user-friendly and multi-OS application 
 to analyse population genetic data</text>
           <rect x="2"   y="334" width="72" height="12" rx="6" fill="#6F67F5"/>
           <rect x="86"  y="334" width="72" height="12" rx="6" fill="#7F76FF"/>
@@ -666,6 +666,32 @@ to analyse population genetic data</text>
           class   = "spg-cta",
           onclick = "document.querySelector('[data-value=\"import\"]').click();",
           shiny::icon("upload"), " Launch "
+        )
+      ),
+      # Center: credits
+      shiny::div(
+        class = "spg-hero-credits",
+        style = "
+          display:flex;
+          flex-direction:column;
+          justify-content:center;
+          align-items:center;
+          text-align:center;
+          padding:0 30px;
+          color:#F4F6FF;
+          font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+        ",
+        shiny::tags$p(
+          style = "font-size:18px; margin-bottom:15px;",
+          shiny::tags$b("Programming:"), " Vincent Manzanilla and Naffiou Kadiri"
+        ),
+        shiny::tags$p(
+          style = "font-size:18px; margin-bottom:15px;",
+          shiny::tags$b("Conception:"), " Thierry de Meeûs"
+        ),
+        shiny::tags$p(
+          style = "font-size:16px; color:#BFC7D5; line-height:1.6;",
+          "Intertryp, Univ Montpellier, Cirad, IRD, Montpellier, France"
         )
       ),
       # Right: big logo
