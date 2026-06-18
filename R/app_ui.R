@@ -652,8 +652,10 @@ app_ui <- function() {
           <text x="0" y="102" fill="#F4F6FF" font-size="75" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="300" letter-spacing="-1.5">ShinyPopGen V1</text>
           <text x="0" y="214" fill="url(#hero-tg)" font-size="75" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="500" letter-spacing="-2">SPG-V1</text>
           <line x1="0" y1="254" x2="328" y2="254" stroke="#7074D8" stroke-width="2"/>
-          <text x="2" y="315" fill="##F4F6FF" font-size="10" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400">A Versatile, user-friendly and multi-OS application 
-to analyse population genetic data</text>
+          <text x="2" y="315" fill="#F4F6FF" font-size="11" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400">
+            <tspan x="2" dy="0">A Versatile, user-friendly and multi-OS application</tspan>
+            <tspan x="2" dy="16">to analyse population genetic data</tspan>
+          </text>
           <rect x="2"   y="334" width="72" height="12" rx="6" fill="#6F67F5"/>
           <rect x="86"  y="334" width="72" height="12" rx="6" fill="#7F76FF"/>
           <rect x="172" y="334" width="72" height="12" rx="6" fill="#17B08B"/>
@@ -662,17 +664,22 @@ to analyse population genetic data</text>
           <rect x="400" y="334" width="96" height="12" rx="6" fill="#5F56CA"/>
           <text x="2" y="390" fill="#787BD3" font-size="25" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400" letter-spacing="2.8">IRD \u00b7 UCAD \u00b7 CIRAD \u00b7 INTERTRYP</text>
         </svg>'),
-                # Credits section - placé AVANT le bouton Launch
+        # Credits section
         shiny::div(
           class = "spg-credits",
           style = "margin: 10px 0 15px 0; padding: 10px 0; border-top: 1px solid rgba(255,255,255,0.08); border-bottom: 1px solid rgba(255,255,255,0.08);",
           shiny::tags$p(
-            style = "color: #a0a8c0; font-size: 13px; font-family: Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif; margin: 0; line-height: 1.7;",
+            style = "color: #a0a8c0; font-size: 20px; font-family: Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif; margin: 0; line-height: 1.7;",
             shiny::tags$strong("Programming:", style = "color: #c8d0e8;"), 
-            " Vincent Manzanilla and Naffiou Kaderi",
+            " Vincent Manzanilla and Naffiou Kadiri",
             shiny::tags$br(),
             shiny::tags$strong("Conception:", style = "color: #c8d0e8;"), 
-            " Thierry de Meeûs"
+            " Thierry de Meeûs",
+            shiny::tags$br(),
+            shiny::tags$span(
+              style = "color: #7880a0; font-size: 20px;",
+              "Intertryp, Univ Montpellier, Cirad, IRD, Montpellier, France"
+            )
           )
         ),
         shiny::tags$button(
