@@ -652,7 +652,7 @@ app_ui <- function() {
           <text x="0" y="102" fill="#F4F6FF" font-size="75" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="300" letter-spacing="-1.5">ShinyPopGen V1</text>
           <text x="0" y="214" fill="url(#hero-tg)" font-size="75" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="500" letter-spacing="-2">SPG-V1</text>
           <line x1="0" y1="254" x2="328" y2="254" stroke="#7074D8" stroke-width="2"/>
-          <text x="2" y="315" fill="#F4F6FF" font-size="11" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400">
+          <text x="2" y="315" fill="#F4F6FF" font-size="20" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400">
             <tspan x="2" dy="0">A Versatile, user-friendly and multi-OS application</tspan>
             <tspan x="2" dy="16">to analyse population genetic data</tspan>
           </text>
@@ -674,12 +674,7 @@ app_ui <- function() {
             " Vincent Manzanilla and Naffiou Kadiri",
             shiny::tags$br(),
             shiny::tags$strong("Conception:", style = "color: #c8d0e8;"), 
-            " Thierry de Meeûs",
-            shiny::tags$br(),
-            shiny::tags$span(
-              style = "color: #7880a0; font-size: 20px;",
-              "Intertryp, Univ Montpellier, Cirad, IRD, Montpellier, France"
-            )
+            " Thierry de Meeûs"
           )
         ),
         shiny::tags$button(
