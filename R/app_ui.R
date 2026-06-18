@@ -662,22 +662,17 @@ to analyse population genetic data</text>
           <rect x="400" y="334" width="96" height="12" rx="6" fill="#5F56CA"/>
           <text x="2" y="390" fill="#787BD3" font-size="25" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400" letter-spacing="2.8">IRD \u00b7 UCAD \u00b7 CIRAD \u00b7 INTERTRYP</text>
         </svg>'),
+                # Credits section - placé AVANT le bouton Launch
         shiny::div(
-          style = "
-            margin: 15px 0 25px 0;
-            color: #F4F6FF;
-            font-family: Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-            line-height: 1.6;
-          ",
+          class = "spg-credits",
+          style = "margin: 10px 0 15px 0; padding: 10px 0; border-top: 1px solid rgba(255,255,255,0.08); border-bottom: 1px solid rgba(255,255,255,0.08);",
           shiny::tags$p(
-            style = "margin-bottom:8px; font-size:16px;",
-            shiny::tags$b("Programming: "),
-            "Vincent Manzanilla and Naffiou Kaderi"
-          ),
-          shiny::tags$p(
-            style = "margin-bottom:8px; font-size:16px;",
-            shiny::tags$b("Conception: "),
-            "Thierry de Meeûs"
+            style = "color: #a0a8c0; font-size: 13px; font-family: Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif; margin: 0; line-height: 1.7;",
+            shiny::tags$strong("Programming:", style = "color: #c8d0e8;"), 
+            " Vincent Manzanilla and Naffiou Kaderi",
+            shiny::tags$br(),
+            shiny::tags$strong("Conception:", style = "color: #c8d0e8;"), 
+            " Thierry de Meeûs"
           )
         ),
         shiny::tags$button(
