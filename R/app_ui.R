@@ -649,20 +649,20 @@ app_ui <- function() {
               <stop offset="100%" stop-color="#5AA7FF"/>
             </linearGradient>
           </defs>
-          <text x="0" y="102" fill="#F4F6FF" font-size="75" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="300" letter-spacing="-1.5">ShinyPopGen V1</text>
-          <text x="0" y="214" fill="url(#hero-tg)" font-size="75" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="500" letter-spacing="-2">SPG-V1</text>
-          <line x1="0" y1="254" x2="328" y2="254" stroke="#7074D8" stroke-width="2"/>
-          <text x="2" y="315" fill="#F4F6FF" font-size="20" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400">
+          <text x="0" y="85" fill="#F4F6FF" font-size="65" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="300" letter-spacing="-1.5">ShinyPopGen V1</text>
+          <text x="0" y="175" fill="url(#hero-tg)" font-size="65" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="500" letter-spacing="-2">SPG-V1</text>
+          <line x1="0" y1="210" x2="300" y2="210" stroke="#7074D8" stroke-width="2"/>
+          <text x="2" y="240" fill="#F4F6FF" font-size="16" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400">
             <tspan x="2" dy="0">A Versatile, user-friendly and multi-OS application</tspan>
-            <tspan x="2" dy="16">to analyse population genetic data</tspan>
+            <tspan x="2" dy="22">to analyse population genetic data</tspan>
           </text>
-          <rect x="2"   y="334" width="72" height="12" rx="6" fill="#6F67F5"/>
-          <rect x="86"  y="334" width="72" height="12" rx="6" fill="#7F76FF"/>
-          <rect x="172" y="334" width="72" height="12" rx="6" fill="#17B08B"/>
-          <rect x="258" y="334" width="42" height="12" rx="6" fill="#C45D34"/>
-          <rect x="314" y="334" width="72" height="12" rx="6" fill="#9A650E"/>
-          <rect x="400" y="334" width="96" height="12" rx="6" fill="#5F56CA"/>
-          <text x="2" y="390" fill="#787BD3" font-size="25" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400" letter-spacing="2.8">IRD \u00b7 UCAD \u00b7 CIRAD \u00b7 INTERTRYP</text>
+          <rect x="2"   y="280" width="72" height="12" rx="6" fill="#6F67F5"/>
+          <rect x="86"  y="280" width="72" height="12" rx="6" fill="#7F76FF"/>
+          <rect x="172" y="280" width="72" height="12" rx="6" fill="#17B08B"/>
+          <rect x="258" y="280" width="42" height="12" rx="6" fill="#C45D34"/>
+          <rect x="314" y="280" width="72" height="12" rx="6" fill="#9A650E"/>
+          <rect x="400" y="280" width="96" height="12" rx="6" fill="#5F56CA"/>
+          <text x="2" y="330" fill="#787BD3" font-size="22" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400" letter-spacing="2.8">IRD \u00b7 UCAD \u00b7 CIRAD \u00b7 INTERTRYP</text>
         </svg>'),
         # Credits section
         shiny::div(
