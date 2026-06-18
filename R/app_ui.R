@@ -662,36 +662,28 @@ to analyse population genetic data</text>
           <rect x="400" y="334" width="96" height="12" rx="6" fill="#5F56CA"/>
           <text x="2" y="390" fill="#787BD3" font-size="25" font-family="Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-weight="400" letter-spacing="2.8">IRD \u00b7 UCAD \u00b7 CIRAD \u00b7 INTERTRYP</text>
         </svg>'),
+        shiny::div(
+          style = "
+            margin: 15px 0 25px 0;
+            color: #F4F6FF;
+            font-family: Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+          ",
+          shiny::tags$p(
+            style = "margin-bottom:8px; font-size:16px;",
+            shiny::tags$b("Programming: "),
+            "Vincent Manzanilla and Naffiou Kaderi"
+          ),
+          shiny::tags$p(
+            style = "margin-bottom:8px; font-size:16px;",
+            shiny::tags$b("Conception: "),
+            "Thierry de Meeûs"
+          )
+        ),
         shiny::tags$button(
           class   = "spg-cta",
           onclick = "document.querySelector('[data-value=\"import\"]').click();",
           shiny::icon("upload"), " Launch "
-        )
-      ),
-      # Center: credits
-      shiny::div(
-        class = "spg-hero-credits",
-        style = "
-          display:flex;
-          flex-direction:column;
-          justify-content:center;
-          align-items:center;
-          text-align:center;
-          padding:0 30px;
-          color:#F4F6FF;
-          font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-        ",
-        shiny::tags$p(
-          style = "font-size:18px; margin-bottom:15px;",
-          shiny::tags$b("Programming:"), " Vincent Manzanilla and Naffiou Kadiri"
-        ),
-        shiny::tags$p(
-          style = "font-size:18px; margin-bottom:15px;",
-          shiny::tags$b("Conception:"), " Thierry de Meeûs"
-        ),
-        shiny::tags$p(
-          style = "font-size:16px; color:#BFC7D5; line-height:1.6;",
-          "Intertryp, Univ Montpellier, Cirad, IRD, Montpellier, France"
         )
       ),
       # Right: big logo
