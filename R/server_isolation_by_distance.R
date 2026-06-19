@@ -1,304 +1,178 @@
 # server_isolation_by_distance.R
-# IBD: Rousset (1997) FST/(1-FST) vs geographic distance + Mantel test.
+# Isolation by Distance \u2014 Pairwise genetic/geographic distances + Mantel test
 #
-# Source of truth: DuckDB tables raw (string genotypes) + meta (GPS).
-# Pairwise FST via FreeNA ENA correction (Chapuis & Estoup 2007):
-#   - EM null allele frequency per locus per population
-#   - ENA-corrected allele frequencies (cq from EM) → WC84 FST
-#   - 95% CI by individual bootstrap within populations
-# Three regression lines: average (F_R), upper CI (F_R_s), lower CI (F_R_i).
-# b = slope; Nb = 1/b; Nem = 1/(2*pi*b).
-# Mantel test on average F_R vs ln(distance).
-
-# ---------------------------------------------------------------------------
-# File-local helpers
-# ---------------------------------------------------------------------------
-
-.haversine_km <- function(lat1, lon1, lat2, lon2) {
-  R    <- 6371.0
-  dlat <- (lat2 - lat1) * pi / 180
-  dlon <- (lon2 - lon1) * pi / 180
-  a    <- sin(dlat / 2)^2 +
-    cos(lat1 * pi / 180) * cos(lat2 * pi / 180) * sin(dlon / 2)^2
-  2 * R * asin(sqrt(a))
-}
-
-.geo_dist_matrix <- function(coords) {
-  n   <- nrow(coords)
-  mat <- matrix(0.0, n, n,
-                dimnames = list(coords$Population, coords$Population))
-  for (i in seq_len(n - 1)) {
-    for (j in (i + 1):n) {
-      d <- .haversine_km(coords$Latitude[i],  coords$Longitude[i],
-                         coords$Latitude[j],  coords$Longitude[j])
-      mat[i, j] <- mat[j, i] <- d
-    }
-  }
-  mat
-}
-
-# ---------------------------------------------------------------------------
-# FreeNA ENA-corrected pairwise FST (Chapuis & Estoup 2007)
-# ---------------------------------------------------------------------------
-
-# EM null allele frequency — faithful translation of FreeNA Pascal source.
-# Returns: list(r, cq, N, n_het, alleles_uniq)
-#   r            = converged null allele frequency
-#   cq           = named vector: corrected allele freqs (sum to ~1-r)
-#   N            = FreeNA N (incl. null hom, excl. missing)
-#   n_het        = named int vector: heterozygote counts per allele
-#   alleles_uniq = character vector of unique non-null alleles
-.ibd_em_null <- function(g_vec, null_code = "999999", miss_code = "0",
-                          tol = 1e-6, max_iter = 10000L) {
-  g <- as.character(g_vec)
-  g <- g[!is.na(g) & nzchar(trimws(g))]
-
-  parse2 <- function(gg) {
-    if (grepl("/", gg, fixed = TRUE)) strsplit(gg, "/", fixed = TRUE)[[1L]]
-    else if (grepl("-", gg, fixed = TRUE)) strsplit(gg, "-", fixed = TRUE)[[1L]]
-    else c(gg, gg)
-  }
-
-  n_nullhom <- 0L; allele_list <- character(0); genos_obs <- list()
-
-  for (gg in g) {
-    al <- parse2(trimws(gg))
-    a1 <- trimws(al[1L]); a2 <- trimws(al[2L])
-    if ((a1 %in% c("0", "", miss_code)) && (a2 %in% c("0", "", miss_code))) next
-    if (a1 == null_code && a2 == null_code) { n_nullhom <- n_nullhom + 1L; next }
-    if (a1 == null_code || a2 == null_code) next  # null het: skip
-    allele_list <- c(allele_list, a1, a2)
-    genos_obs[[length(genos_obs) + 1L]] <- c(a1, a2)
-  }
-
-  N <- n_nullhom + length(genos_obs)
-  empty_r <- list(r = 0.0, cq = setNames(numeric(0), character(0)),
-                  N = 0L, n_het = setNames(integer(0), character(0)),
-                  alleles_uniq = character(0))
-  if (N == 0L)  return(empty_r)
-  if (length(genos_obs) == 0L)
-    return(list(r = 1.0, cq = setNames(numeric(0), character(0)),
-                N = N, n_het = setNames(integer(0), character(0)),
-                alleles_uniq = character(0)))
-
-  alleles_uniq <- sort(unique(allele_list)); A <- length(alleles_uniq)
-  N_obs <- length(genos_obs)
-  al_table <- table(factor(allele_list, levels = alleles_uniq))
-  genefreq  <- as.numeric(al_table) / (2.0 * N_obs)
-  names(genefreq) <- alleles_uniq
-
-  n_hom <- setNames(integer(A), alleles_uniq)
-  n_het <- setNames(integer(A), alleles_uniq)
-  for (pair in genos_obs) {
-    a1 <- pair[1L]; a2 <- pair[2L]
-    if (a1 == a2) n_hom[a1] <- n_hom[a1] + 1L
-    else { n_het[a1] <- n_het[a1] + 1L; n_het[a2] <- n_het[a2] + 1L }
-  }
-
-  rd  <- if (n_nullhom > 0L) sqrt(n_nullhom / N) else sqrt(1.0 / (N + 1L))
-  cq  <- setNames(numeric(A), alleles_uniq)
-  for (k in seq_len(A)) {
-    a <- alleles_uniq[k]
-    if (genefreq[k] <= 0) next
-    ii <- n_hom[a]; jj <- n_het[a]
-    cq[k] <- if (n_nullhom > 0L) 1 - sqrt((n_nullhom + N - ii - jj) / N)
-              else                1 - sqrt((1 + N - ii - jj) / (N + 1L))
-    cq[k] <- min(max(cq[k], 1e-10), 1 - 1e-10)
-  }
-
-  old_cq <- cq
-  for (iter in seq_len(max_iter)) {
-    rdi <- 0.0
-    for (k in seq_len(A)) {
-      a <- alleles_uniq[k]
-      if (genefreq[k] <= 0) next
-      ii <- n_hom[a]; jj <- n_het[a]; cq_old <- cq[k]
-      denom <- cq_old + 2 * rd
-      if (denom > 0) {
-        cq[k] <- ((cq_old + rd) / denom) * (ii / N) + jj / (2 * N)
-        rdi    <- rdi + (rd / denom) * (ii / N)
-      }
-      cq[k] <- min(max(cq[k], 1e-10), 1 - 1e-10)
-    }
-    rd_new     <- min(max(rdi + n_nullhom / N, 1e-10), 1 - 1e-10)
-    rd_change  <- abs(rd_new - rd)
-    cq_change  <- if (A > 0) max(abs(cq - old_cq), na.rm = TRUE) else 0
-    old_cq <- cq; rd <- rd_new
-    if (rd_change < tol && cq_change < tol) break
-  }
-
-  list(r = rd, cq = cq, N = N, n_het = n_het, alleles_uniq = alleles_uniq)
-}
-
-# WC84 a/b/c components for 2 populations using ENA-corrected allele freqs.
-# em1, em2: return values from .ibd_em_null()
-# Returns: list(a, b, c) or NULL if underdetermined
-.wc84_ena_2pop <- function(em1, em2) {
-  K    <- 2L
-  N_k  <- c(em1$N, em2$N)
-  if (any(N_k < 2L)) return(NULL)
-  n_total <- sum(N_k)
-  n_bar   <- n_total / K
-  n_c     <- (n_total - sum(N_k^2) / n_total) / (K - 1L)
-  if (n_c <= 0 || n_bar <= 1) return(NULL)
-
-  all_alleles <- unique(c(em1$alleles_uniq, em2$alleles_uniq))
-  if (length(all_alleles) == 0L) return(NULL)
-
-  a_sum <- 0; b_sum <- 0; c_sum <- 0
-
-  for (allele in all_alleles) {
-    p1  <- if (allele %in% names(em1$cq)) em1$cq[[allele]] else 0.0
-    p2  <- if (allele %in% names(em2$cq)) em2$cq[[allele]] else 0.0
-    pbar <- (N_k[1L] * p1 + N_k[2L] * p2) / n_total
-    s2   <- (N_k[1L] * (p1 - pbar)^2 + N_k[2L] * (p2 - pbar)^2) /
-              ((K - 1L) * n_bar)
-    # H_obs: count of heterozygotes (null hom contribute 0 het)
-    h1 <- if (allele %in% names(em1$n_het)) em1$n_het[[allele]] else 0L
-    h2 <- if (allele %in% names(em2$n_het)) em2$n_het[[allele]] else 0L
-    hbar <- (h1 + h2) / n_total  # denominator = FreeNA N (incl null hom)
-    term <- pbar * (1 - pbar)
-    a_sum <- a_sum + (n_bar / n_c) *
-               (s2 - (1 / (n_bar - 1)) * (term - (K-1)/K * s2 - 0.25 * hbar))
-    b_sum <- b_sum + (n_bar / (n_bar - 1)) *
-               (term - (K-1)/K * s2 - (2 * n_bar - 1) / (4 * n_bar) * hbar)
-    c_sum <- c_sum + 0.5 * hbar
-  }
-  list(a = a_sum, b = b_sum, c = c_sum)
-}
-
-# FreeNA ENA-corrected pairwise FST + 95% CI (individual bootstrap).
-# hap_df     : data.frame, rows = individuals, cols = loci (string "a/b" genotypes)
-# pop_vector : character vector of population labels (length = nrow(hap_df))
-# Bootstrap is parallelised over replicates using parallel::mclapply (ncpu-1 cores).
-# Returns data.frame: pop_i, pop_j, fst, ci_l, ci_u
-.pairwise_freena_fst_ci <- function(hap_df, pop_vector,
-                                     null_code = "999999",
-                                     n_boot = 500L, conf = 0.95) {
-  pops    <- sort(unique(pop_vector))
-  loci    <- colnames(hap_df)
-  n_pops  <- length(pops)
-  alpha   <- (1 - conf) / 2
-  n_cores <- max(1L, parallel::detectCores() - 1L)
-
-  # Compute FST for given individual index sets
-  .fst_pair <- function(idx1, idx2) {
-    a_tot <- 0; b_tot <- 0; c_tot <- 0; ok <- 0L
-    for (locus in loci) {
-      em1  <- .ibd_em_null(hap_df[[locus]][idx1], null_code)
-      em2  <- .ibd_em_null(hap_df[[locus]][idx2], null_code)
-      comp <- .wc84_ena_2pop(em1, em2)
-      if (is.null(comp)) next
-      a_tot <- a_tot + comp$a; b_tot <- b_tot + comp$b; c_tot <- c_tot + comp$c
-      ok <- ok + 1L
-    }
-    if (ok == 0L || (a_tot + b_tot + c_tot) == 0) return(NA_real_)
-    a_tot / (a_tot + b_tot + c_tot)
-  }
-
-  result <- vector("list", n_pops * (n_pops - 1L) / 2L)
-  k <- 1L
-
-  for (i in seq_len(n_pops - 1L)) {
-    for (j in (i + 1L):n_pops) {
-      pi <- pops[i]; pj <- pops[j]
-      idx1 <- which(pop_vector == pi)
-      idx2 <- which(pop_vector == pj)
-      if (length(idx1) < 2L || length(idx2) < 2L) {
-        result[[k]] <- data.frame(pop_i = pi, pop_j = pj,
-                                   fst = NA_real_, ci_l = NA_real_, ci_u = NA_real_,
-                                   stringsAsFactors = FALSE)
-        k <- k + 1L; next
-      }
-
-      fst_obs <- .fst_pair(idx1, idx2)
-
-      # Parallel bootstrap over replicates
-      boot_list <- parallel::mclapply(seq_len(n_boot), function(.b) {
-        b1 <- sample(idx1, length(idx1), replace = TRUE)
-        b2 <- sample(idx2, length(idx2), replace = TRUE)
-        .fst_pair(b1, b2)
-      }, mc.cores = n_cores)
-      boot_fst <- unlist(boot_list, use.names = FALSE)
-      boot_fst <- boot_fst[is.finite(boot_fst)]
-      ci_l <- ci_u <- NA_real_
-      if (length(boot_fst) > 0L) {
-        q    <- quantile(boot_fst, probs = c(alpha, 1 - alpha), na.rm = TRUE)
-        ci_l <- q[[1L]]; ci_u <- q[[2L]]
-      }
-      result[[k]] <- data.frame(pop_i = pi, pop_j = pj,
-                                 fst = fst_obs, ci_l = ci_l, ci_u = ci_u,
-                                 stringsAsFactors = FALSE)
-      k <- k + 1L
-    }
-  }
-  do.call(rbind, result)
-}
-
-.linearise <- function(x) {
-  # FST / (1 - FST); clamp to [0, 0.9999] before dividing
-  x <- pmin(pmax(x, 0), 0.9999)
-  x / (1 - x)
-}
-
-.mantel_test <- function(fr_vec, dist_vec, n_perm = 9999, use_log = FALSE) {
-  x <- if (use_log) log(dist_vec) else dist_vec
-  ok <- is.finite(fr_vec) & is.finite(x)
-  y  <- fr_vec[ok]; x <- x[ok]
-  n  <- length(y)
-  if (n < 3L)
-    return(list(r = NA_real_, p_value = NA_real_, n_pairs = 0L,
-                slope = NA_real_, intercept = NA_real_))
-
-  r_obs <- cor(y, x)
-  lm0   <- lm(y ~ x)
-
-  # Mantel permutation: shuffle x
-  perm_r <- vapply(seq_len(n_perm), function(.i) {
-    xp <- sample(x)
-    suppressWarnings(cor(y, xp))
-  }, numeric(1))
-  perm_r  <- perm_r[is.finite(perm_r)]
-  p_value <- if (length(perm_r) > 0) mean(perm_r >= r_obs) else NA_real_
-
-  list(r         = r_obs,
-       p_value   = p_value,
-       n_pairs   = n,
-       slope     = unname(coef(lm0)[2L]),
-       intercept = unname(coef(lm0)[1L]))
-}
-
-# Fit regression of y ~ x (or log(x)) and return b, Nb, Nem
-.reg_params <- function(y, x, use_log) {
-  xv <- if (use_log) log(x) else x
-  ok <- is.finite(y) & is.finite(xv)
-  if (sum(ok) < 3L) return(c(b = NA_real_, Nb = NA_real_, Nem = NA_real_))
-  cf <- coef(lm(y[ok] ~ xv[ok]))
-  b  <- unname(cf[2L])
-  list(
-    intercept = unname(cf[1L]),
-    b         = b,
-    Nb        = if (is.finite(b) && b > 0) 1 / b else NA_real_,
-    Nem       = if (is.finite(b) && b > 0) 1 / (2 * pi * b) else NA_real_
-  )
-}
-
-# ---------------------------------------------------------------------------
-# Module server
-# ---------------------------------------------------------------------------
+# Tab 1: Pairwise FST (raw + ENA), DCSE (raw + INA), Dgeo (Haversine), bootstrap CI
+# Tab 2: Mantel test on square or rectangular (column-wise) matrices
 
 server_isolation_by_distance <- function(id, rv) {
   moduleServer(id, function(input, output, session) {
 
-    # ── DB truth layer ─────────────────────────────────────────────────────
-    `%||%`     <- function(x, y) if (is.null(x) || length(x) == 0L || all(is.na(x))) y else x
+    # ── Helpers ────────────────────────────────────────────────────────────────
+    `%||%` <- function(a, b) if (!is.null(a)) a else b
+    safe_choice <- function(x, default = "all") {
+      if (is.null(x) || length(x) == 0L || identical(x, "") || all(is.na(x))) default
+      else as.character(x[[1]])
+    }
+    sql_id   <- function(con, x) as.character(DBI::dbQuoteIdentifier(con, x))
+    sql_str  <- function(con, x) as.character(DBI::dbQuoteString(con, x))
+    treat_id <- function(loc) paste0("coding_", gsub("[^A-Za-z0-9]", "_", loc))
+
+    ci_bounds <- function(alpha) {
+      lo <- alpha / 2; hi <- 1 - alpha / 2
+      list(lo = lo, hi = hi, label = paste0(round((1 - alpha) * 100, 3), "% CI"))
+    }
+
+    fmt6 <- function(x) if (is.na(x)) "NA" else formatC(as.numeric(x), digits = 6, format = "f")
+
+    # ── Haversine distance (km) ────────────────────────────────────────────────
+    haversine_km <- function(lat1, lon1, lat2, lon2) {
+      R <- 6371.0
+      dlat <- (lat2 - lat1) * pi / 180
+      dlon <- (lon2 - lon1) * pi / 180
+      a <- sin(dlat / 2)^2 +
+           cos(lat1 * pi / 180) * cos(lat2 * pi / 180) * sin(dlon / 2)^2
+      2 * R * asin(sqrt(a))
+    }
+
+    # Build symmetric geographic distance matrix from a data.frame of centroids
+    # coords: data.frame with columns Population, Latitude, Longitude
+    geo_dist_matrix <- function(coords) {
+      pops <- coords$Population
+      n <- nrow(coords)
+      mat <- matrix(0.0, n, n, dimnames = list(pops, pops))
+      for (i in seq_len(n - 1L)) {
+        for (j in (i + 1L):n) {
+          d <- haversine_km(coords$Latitude[i], coords$Longitude[i],
+                            coords$Latitude[j], coords$Longitude[j])
+          mat[i, j] <- mat[j, i] <- d
+        }
+      }
+      mat
+    }
+
+    # ── Parse distance file (square or rectangular column-wise) ────────────────
+    # Rectangular format: first row = pair labels (PopA-PopB), each column = one
+    # distance value. Multiple rows = multiple loci/replicates. Average across rows.
+    parse_dist_file <- function(file_path, format = "rectangular", sep = NULL) {
+      # Auto-detect separator
+      if (is.null(sep)) {
+        first_lines <- readLines(file_path, n = 5, warn = FALSE)
+        sep <- if (any(grepl("\t", first_lines))) "\t" else ","
+      }
+      raw <- tryCatch(
+        read.csv(file_path, check.names = FALSE, stringsAsFactors = FALSE, sep = sep),
+        error = function(e) {
+          read.table(file_path, header = TRUE, sep = sep,
+                     check.names = FALSE, stringsAsFactors = FALSE)
+        }
+      )
+
+      if (format == "square") {
+        # First column = row names, rest = matrix
+        rn <- as.character(raw[[1L]])
+        mat <- as.matrix(raw[, -1L, drop = FALSE])
+        storage.mode(mat) <- "double"
+        rownames(mat) <- rn
+        colnames(mat) <- rn
+        return(mat)
+      }
+
+      # Rectangular: column headers = pair labels "PopA-PopB" (or "PopA_PopB", "PopA vs PopB")
+      pair_names <- names(raw)
+      # Try several separators for pair labels
+      split_pair <- function(s) {
+        for (pat in c("-", "_", " vs ", " - ", " _ ")) {
+          parts <- strsplit(s, pat, fixed = TRUE)[[1L]]
+          if (length(parts) == 2L) return(trimws(parts))
+        }
+        return(NULL)
+      }
+
+      pops <- character(0)
+      pair_list <- list()
+      for (pn in pair_names) {
+        parts <- split_pair(pn)
+        if (!is.null(parts)) {
+          pair_list[[pn]] <- parts
+          pops <- c(pops, parts)
+        }
+      }
+      pops <- unique(pops)
+
+      # Average values per column (across rows = loci/replicates)
+      avg_vals <- sapply(pair_names, function(cn) {
+        v <- raw[[cn]]
+        v <- suppressWarnings(as.numeric(v))
+        mean(v, na.rm = TRUE)
+      })
+      names(avg_vals) <- pair_names
+
+      # Build square matrix
+      n <- length(pops)
+      mat <- matrix(NA_real_, n, n, dimnames = list(pops, pops))
+      for (pn in pair_names) {
+        parts <- pair_list[[pn]]
+        if (!is.null(parts)) {
+          p1 <- parts[1L]; p2 <- parts[2L]
+          if (p1 %in% pops && p2 %in% pops) {
+            mat[p1, p2] <- mat[p2, p1] <- avg_vals[[pn]]
+          }
+        }
+      }
+      diag(mat) <- 0
+      mat
+    }
+
+    # ── Mantel permutation test ────────────────────────────────────────────────
+    # Permute rows/columns jointly (preserves symmetry)
+    mantel_test <- function(mat1, mat2, n_perm = 9999, method = "pearson") {
+      ok <- !is.na(mat1) & !is.na(mat2) & lower.tri(mat1)
+      v1 <- mat1[ok]; v2 <- mat2[ok]
+      n <- length(v1)
+
+      if (n < 3L) {
+        return(list(r = NA_real_, p_value = NA_real_, n = n,
+                    v1 = v1, v2 = v2, perm_r = numeric(0),
+                    message = "Not enough data points (need >= 3 pairs)"))
+      }
+
+      r_obs <- cor(v1, v2, method = method, use = "complete.obs")
+
+      # Permute rows/columns of mat2 jointly
+      n_mat <- nrow(mat2)
+      perm_r <- numeric(n_perm)
+      for (k in seq_len(n_perm)) {
+        idx <- sample(n_mat)
+        perm_mat2 <- mat2[idx, idx]
+        v2_perm <- perm_mat2[ok]
+        perm_r[k] <- cor(v1, v2_perm, method = method, use = "complete.obs")
+      }
+      perm_r <- perm_r[is.finite(perm_r)]
+      p_value <- mean(perm_r >= r_obs)
+
+      list(r = r_obs, p_value = p_value, n = n,
+           v1 = v1, v2 = v2, perm_r = perm_r,
+           message = "OK", n_perm = length(perm_r))
+    }
+
+    # ── DB plumbing ────────────────────────────────────────────────────────────
     db_tick    <- reactive({ rv$db_tick })
-    con_r      <- reactive({ shiny::req(rv$con); rv$con })
-    tbl_meta_r <- reactive({ rv$tbl_meta %|||% "meta" })
+    con_r      <- reactive({ req(rv$con); rv$con })
+    tbl_meta_r <- reactive({ rv$tbl_meta %||% "meta" })
+
+    tbl_hf_r <- reactive({
+      con <- con_r()
+      if (exists("duck_tbl_exists", mode = "function", inherits = TRUE) &&
+          exists(".duckdb_get_params", mode = "function", inherits = TRUE) &&
+          duck_tbl_exists(con, "params")) {
+        p <- .duckdb_get_params(con)
+        return(as.character(p$tbl_hf %||% "hf"))
+      }
+      "hf"
+    })
 
     db_ready <- reactive({
-      db_tick()
-      con <- con_r()
+      db_tick(); con <- con_r()
       shiny::req(isTRUE(rv$db_ready))
       shiny::validate(
         shiny::need(DBI::dbExistsTable(con, tbl_meta_r()), "DuckDB meta table missing.")
@@ -306,372 +180,1446 @@ server_isolation_by_distance <- function(id, rv) {
       TRUE
     })
 
-    # ── Population GPS centroids ───────────────────────────────────────────
-    coords_r <- reactive({
+    base_r <- reactive({
       db_ready()
-      con  <- con_r()
-      cols <- DBI::dbGetQuery(con, sprintf(
-        "SELECT column_name FROM information_schema.columns WHERE table_name = '%s'",
-        tbl_meta_r()))$column_name
+      b <- rv$base_af %||% rv$base %||% rv$base_r %||% rv$genotype_base
+      b <- suppressWarnings(as.integer(b))
+      if (length(b) == 1L && is.finite(b) && b > 1L) return(as.integer(b))
+      con <- con_r()
+      if (DBI::dbExistsTable(con, "params") &&
+          exists(".duckdb_get_params", mode = "function", inherits = TRUE)) {
+        p <- .duckdb_get_params(con)
+        b <- suppressWarnings(as.integer(
+          p$base %||% p$base_scalar_full %||% p$base_scalar_preview))
+        if (length(b) == 1L && is.finite(b) && b > 1L) return(as.integer(b))
+      }
+      1000L
+    })
+
+    hf_schema_r <- reactive({
+      db_ready(); con <- con_r()
+      info <- DBI::dbGetQuery(con,
+        sprintf("PRAGMA table_info(%s)", DBI::dbQuoteIdentifier(con, tbl_hf_r())))
+      cols <- info$name
+      if (all(c("individual","locus","g") %in% cols))
+        return(list(ind_col="individual", locus_col="locus",    gt_col="g"))
+      if (all(c("indiv_id","locus_id","gt") %in% cols))
+        return(list(ind_col="indiv_id",   locus_col="locus_id", gt_col="gt"))
+      shiny::validate(shiny::need(FALSE,
+        "hf must contain (individual,locus,g) or (indiv_id,locus_id,gt)."))
+    })
+
+    meta_schema_r <- reactive({
+      db_ready(); con <- con_r()
+      info <- DBI::dbGetQuery(con,
+        sprintf("PRAGMA table_info(%s)", DBI::dbQuoteIdentifier(con, tbl_meta_r())))
+      cols    <- info$name
+      ind_col <- if ("individual" %in% cols) "individual"
+                 else if ("indiv_id" %in% cols) "indiv_id"
+                 else shiny::validate(shiny::need(FALSE, "No individual column found in meta."))
+      pop_col <- c("Population","population","pop","pop_code")[
+        c("Population","population","pop","pop_code") %in% cols][1]
+      shiny::validate(shiny::need(!is.na(pop_col), "No population column found in meta."))
+      list(ind_col = ind_col, pop_col = pop_col,
+           has_lat = "Latitude" %in% cols, has_lon = "Longitude" %in% cols)
+    })
+
+    locus_order_cte <- function(con, hf_tbl_q, hl_q)
+      sprintf("locus_order AS (
+  SELECT CAST(%s AS VARCHAR) AS _lo_marker, MIN(rowid) AS _lo_rank
+  FROM %s GROUP BY CAST(%s AS VARCHAR))", hl_q, hf_tbl_q, hl_q)
+
+    # ── Marker / population lists ──────────────────────────────────────────────
+    pops_r <- reactive({
+      db_ready(); con <- con_r(); ms <- meta_schema_r()
+      as.character(DBI::dbGetQuery(con, sprintf(
+        "SELECT DISTINCT CAST(%s AS VARCHAR) AS p FROM %s WHERE %s IS NOT NULL ORDER BY p",
+        sql_id(con,ms$pop_col), sql_id(con,tbl_meta_r()),
+        sql_id(con,ms$pop_col)))$p)
+    })
+
+    markers_r <- reactive({
+      db_ready(); con <- con_r(); hs <- hf_schema_r()
+      hf_q <- sql_id(con,tbl_hf_r()); hl_q <- sql_id(con,hs$locus_col)
+      as.character(DBI::dbGetQuery(con, sprintf("
+        WITH %s
+        SELECT DISTINCT CAST(%s AS VARCHAR) AS Marker, lo._lo_rank
+        FROM %s h
+        LEFT JOIN locus_order lo ON CAST(%s AS VARCHAR) = lo._lo_marker
+        ORDER BY lo._lo_rank ASC",
+        locus_order_cte(con,hf_q,hl_q), hl_q, hf_q, hl_q))$Marker)
+    })
+
+    # ── GPS centroids per population ───────────────────────────────────────────
+    gps_coords_r <- reactive({
+      db_ready(); con <- con_r(); ms <- meta_schema_r()
       shiny::validate(shiny::need(
-        all(c("Latitude", "Longitude") %in% cols),
-        "No GPS data found. Re-import your dataset and assign Latitude/Longitude columns."))
+        ms$has_lat && ms$has_lon,
+        "No Latitude/Longitude columns in meta table. Please re-import with GPS data."
+      ))
       df <- DBI::dbGetQuery(con, sprintf(
-        "SELECT Population,
+        "SELECT CAST(%s AS VARCHAR) AS Population,
                 AVG(CAST(Latitude  AS DOUBLE)) AS Latitude,
                 AVG(CAST(Longitude AS DOUBLE)) AS Longitude
          FROM %s
-         WHERE Population IS NOT NULL
-           AND Latitude   IS NOT NULL AND Longitude IS NOT NULL
-         GROUP BY Population ORDER BY Population",
-        sql_ident(con, tbl_meta_r())))
+         WHERE %s IS NOT NULL
+           AND Latitude IS NOT NULL AND Longitude IS NOT NULL
+           AND CAST(Latitude  AS VARCHAR) <> ''
+           AND CAST(Longitude AS VARCHAR) <> ''
+         GROUP BY Population
+         ORDER BY Population",
+        sql_id(con, ms$pop_col),
+        sql_id(con, tbl_meta_r()),
+        sql_id(con, ms$pop_col)))
       shiny::validate(shiny::need(nrow(df) >= 2L,
-        "At least 2 populations with GPS coordinates are required."))
+        "At least 2 populations with GPS coordinates required."))
       df
     })
 
-    # ── Raw string genotypes (for FreeNA ENA-corrected FST) ────────────────
-    # Reads from the DuckDB raw table, reconstructing "a/b" strings per locus.
-    # Returns list(hap_df, pop_vector) identical in structure to null_alleles.
-    raw_genos_r <- reactive({
-      db_ready()
-      con     <- con_r()
-      tbl_raw <- rv$tbl_raw %||% "raw"
-      shiny::validate(shiny::need(
-        DBI::dbExistsTable(con, tbl_raw),
-        "Raw genotype table not found in DuckDB. Please re-import the dataset."))
-
-      ok_par <- tryCatch(DBI::dbExistsTable(con, "params"), error = function(e) FALSE)
-      shiny::validate(shiny::need(ok_par, "params table not found."))
-
-      marker_json <- tryCatch(
-        DBI::dbGetQuery(con, "SELECT value FROM params WHERE key='marker_cols_raw'")$value[1L],
-        error = function(e) NA_character_)
-      marker_cols_raw <- if (!is.na(marker_json) && nzchar(marker_json))
-        tryCatch(jsonlite::fromJSON(marker_json), error = function(e) character(0))
-      else character(0)
-      shiny::validate(shiny::need(length(marker_cols_raw) > 0L,
-        "No marker_cols_raw found in DuckDB params."))
-
-      geno_fmt <- tryCatch(
-        DBI::dbGetQuery(con, "SELECT value FROM params WHERE key='genotype_format'")$value[1L],
-        error = function(e) NA_character_)
-      if (is.na(geno_fmt) || !nzchar(geno_fmt))
-        geno_fmt <- if (any(grepl("(_1|\\.[0-9]+)$", marker_cols_raw))) "paired" else "string"
-
-      keep     <- unique(marker_cols_raw)
-      keep_sql <- paste(vapply(keep, function(x)
-        as.character(DBI::dbQuoteIdentifier(con, x)), character(1L)), collapse = ", ")
-      raw_df   <- as.data.frame(
-        DBI::dbGetQuery(con, sprintf("SELECT rowid AS individual, %s FROM %s",
-                                     keep_sql,
-                                     as.character(DBI::dbQuoteIdentifier(con, tbl_raw)))),
-        stringsAsFactors = FALSE)
-      shiny::validate(shiny::need(nrow(raw_df) > 0L, "No rows in raw table."))
-
-      # Population assignment: always from meta (single source of truth).
-      # Join raw rows (by rowid = individual) to meta Population column.
-      meta_pop <- DBI::dbGetQuery(con, sprintf(
-        "SELECT individual, Population FROM %s WHERE Population IS NOT NULL",
-        sql_ident(con, tbl_meta_r())))
-      raw_df$Population <- meta_pop$Population[match(raw_df$individual, meta_pop$individual)]
-      pop_vector <- as.character(raw_df$Population)
-
-      # Reconstruct "a/b" strings per locus
-      pick_b <- function(locus, nms) {
-        cands <- c(paste0(locus, "_1"), paste0(locus, "_2"),
-                   paste0(locus, ".", 1:9), paste0(locus, "_", 1:9))
-        hit   <- cands[cands %in% nms]; if (length(hit)) hit[1L] else NA_character_
-      }
-      if (identical(geno_fmt, "paired")) {
-        nms  <- names(raw_df)
-        loci <- unique(sub("(_1|_2|\\.[0-9]+)$", "", marker_cols_raw))
-        hap_df <- data.frame(row.names = seq_len(nrow(raw_df)))
-        for (locus in loci) {
-          b <- pick_b(locus, nms)
-          if (!locus %in% nms || is.na(b) || !b %in% nms) next
-          a_val <- as.character(raw_df[[locus]])
-          b_val <- as.character(raw_df[[b]])
-          a_val[is.na(a_val) | trimws(a_val) == ""] <- "0"
-          b_val[is.na(b_val) | trimws(b_val) == ""] <- "0"
-          already <- grepl("/", a_val, fixed = TRUE) | grepl("-", a_val, fixed = TRUE)
-          hap_df[[locus]] <- ifelse(already, a_val, paste0(a_val, "/", b_val))
-        }
-      } else {
-        hap_df <- as.data.frame(raw_df[, marker_cols_raw, drop = FALSE],
-                                 stringsAsFactors = FALSE)
-        for (j in seq_along(hap_df)) {
-          x <- as.character(hap_df[[j]])
-          x[is.na(x) | trimws(x) == ""] <- "0/0"
-          hap_df[[j]] <- x
-        }
-      }
-      shiny::validate(shiny::need(ncol(hap_df) > 0L,
-        "No locus columns could be reconstructed from raw table."))
-      list(hap_df = hap_df, pop_vector = pop_vector)
+    # ── Per-locus coding UI ────────────────────────────────────────────────────
+    output$locus_coding_ui <- renderUI({
+      ns_fn   <- session$ns
+      markers <- markers_r()
+      if (length(markers) == 0L) return(tags$p("No markers loaded yet."))
+      items <- lapply(markers, function(loc) {
+        tags$div(class = "ibd-locus-item",
+          tags$div(class = "ibd-locus-name", loc),
+          radioButtons(
+            inputId  = ns_fn(treat_id(loc)),
+            label    = NULL,
+            choices  = c(
+              "000000 \u2014 absent / PCR failure" = "absent",
+              "999999 \u2014 null homozygote"      = "null_homo"
+            ),
+            selected = "absent",
+            inline   = TRUE
+          )
+        )
+      })
+      tags$div(class = "ibd-locus-grid", items)
     })
 
-    # ── Main results (triggered by Run) ────────────────────────────────────
-    results_r <- eventReactive(input$run, {
-      shiny::req(db_ready())
-      coords  <- coords_r()
-      rg      <- raw_genos_r()
-      use_log <- (input$model == "2D")
-      n_perm  <- as.integer(input$n_perm)
-      n_boot  <- as.integer(input$n_boot_pw)
-
-      hap_df     <- rg$hap_df
-      pop_vector <- rg$pop_vector
-
-      # Keep only populations that have GPS data
-      pops_with_gps <- coords$Population
-      keep_pop      <- pop_vector %in% pops_with_gps
-      shiny::validate(shiny::need(
-        length(unique(pop_vector[keep_pop])) >= 2L,
-        "Less than 2 populations have both genotypes and GPS data."))
-
-      hap_sub <- hap_df[keep_pop, , drop = FALSE]
-      pop_sub <- pop_vector[keep_pop]
-      new_levels <- sort(unique(pop_sub))
-
-      # Pairwise FreeNA ENA-corrected FST + CI
-      withProgress(message = "Computing FreeNA ENA-corrected pairwise FST...", value = 0.2, {
-        pw <- .pairwise_freena_fst_ci(hap_sub, pop_sub, n_boot = n_boot)
+    locus_treatments_r <- reactive({
+      markers <- markers_r()
+      treats  <- sapply(markers, function(loc) {
+        val <- input[[treat_id(loc)]]
+        if (is.null(val) || !val %in% c("null_homo","absent")) "absent" else val
       })
+      stats::setNames(treats, markers)
+    })
 
-      # Pairwise geographic distances
-      coords_ord <- coords[match(new_levels, coords$Population), ]
-      coords_ord <- coords_ord[!is.na(coords_ord$Population), ]
-      dist_mat   <- .geo_dist_matrix(coords_ord)
+    # ══════════════════════════════════════════════════════════════════════════
+    #  EM ALGORITHM \u2014 exact translation of rDempster_per_locus (Pascal FreeNA)
+    # ══════════════════════════════════════════════════════════════════════════
+    em_freena <- function(gt_vec, base, treat = "absent") {
+      efpop      <- length(gt_vec)
+      absent_msk <- is.na(gt_vec) | gt_vec <= 0L
+      n_absent   <- sum(absent_msk)
+      valid_gt   <- gt_vec[!absent_msk]
 
-      # Match pairs to distance matrix
-      get_dist <- function(p1, p2) {
-        if (p1 %in% rownames(dist_mat) && p2 %in% rownames(dist_mat))
-          dist_mat[p1, p2] else NA_real_
+      empty <- list(rd=0.0, pfreq=numeric(0), genefreq_obs=numeric(0),
+                    H_ii=numeric(0), H_iX=numeric(0), N=0L, efpop=efpop,
+                    n_absent=n_absent, n_null_homo=0L, alleles=integer(0),
+                    n_valid_geno=0L)
+
+      if (length(valid_gt) == 0L) return(empty)
+
+      a1_all <- floor(valid_gt / base)
+      a2_all <- valid_gt %% base
+      null_code     <- if (base >= 1000L) 999L else 99L
+      null_homo_msk <- (a1_all == null_code) & (a2_all == null_code)
+      n_null_homo   <- sum(null_homo_msk)
+
+      valid_a1 <- a1_all[!null_homo_msk]
+      valid_a2 <- a2_all[!null_homo_msk]
+      alleles  <- sort(unique(c(valid_a1, valid_a2)))
+      alleles  <- alleles[alleles >= 0L & alleles != null_code]
+
+      N <- efpop - n_absent
+      if (N == 0L || length(alleles) == 0L) {
+        empty$N <- N; empty$n_null_homo <- n_null_homo; return(empty)
       }
-      pw$dist_km <- mapply(get_dist, pw$pop_i, pw$pop_j)
 
-      # Linearised FST (F_R, F_R_i, F_R_s)
-      pw$FR   <- .linearise(pw$fst)
-      pw$FR_i <- .linearise(pw$ci_l)
-      pw$FR_s <- .linearise(pw$ci_u)
+      n_valid_geno <- N - n_null_homo
+      if (n_valid_geno == 0L) {
+        empty$N <- N; empty$n_null_homo <- n_null_homo; return(empty)
+      }
 
-      # Three regression fits
-      reg_avg <- .reg_params(pw$FR,   pw$dist_km, use_log)
-      reg_ls  <- .reg_params(pw$FR_s, pw$dist_km, use_log)
-      reg_li  <- .reg_params(pw$FR_i, pw$dist_km, use_log)
+      genefreq_obs <- sapply(alleles, function(a)
+        (sum(valid_a1==a) + sum(valid_a2==a)) / (2L * n_valid_geno))
+      H_ii  <- sapply(alleles, function(a) sum(valid_a1==a & valid_a2==a))
+      H_iX  <- sapply(alleles, function(a)
+        sum((valid_a1==a & valid_a2!=a) | (valid_a2==a & valid_a1!=a)))
+      hotot <- sum(H_ii)
 
-      # Mantel test (on average F_R)
-      withProgress(message = "Running Mantel test...", value = 0.8, {
-        mantel <- .mantel_test(pw$FR, pw$dist_km, n_perm = n_perm, use_log = use_log)
-      })
+      rd <- if (treat == "null_homo" && n_null_homo > 0L)
+              sqrt(n_null_homo / N)
+            else
+              sqrt(1.0 / (N + 1.0))
 
+      p <- numeric(length(alleles))
+      for (ai in seq_along(alleles)) {
+        if (genefreq_obs[ai] <= 0) { p[ai] <- 0.0; next }
+        ii <- H_ii[ai]; jj <- H_iX[ai]
+        if (treat == "null_homo" && n_null_homo > 0L) {
+          X <- n_null_homo + hotot - ii + (N - n_null_homo - hotot) - jj; Y <- N
+        } else {
+          X <- 1.0 + hotot - ii + (N - hotot) - jj; Y <- N + 1.0
+        }
+        p[ai] <- 1.0 - sqrt(max(0.0, X / Y))
+      }
+
+      for (iter in seq_len(5000L)) {
+        new_p <- numeric(length(alleles)); rdi <- 0.0; re <- 0L
+        for (ai in seq_along(alleles)) {
+          if (genefreq_obs[ai] <= 0) { new_p[ai] <- 0.0; next }
+          pa <- p[ai]; denom <- pa + 2.0 * rd
+          if (denom <= 0) { new_p[ai] <- 0.0; next }
+          p_new     <- (pa + rd) / denom * (H_ii[ai] / N) + H_iX[ai] / (2.0 * N)
+          rdi       <- rdi + rd / denom * (H_ii[ai] / N)
+          new_p[ai] <- p_new
+          if (abs(p_new - pa) > 1e-6) re <- re + 1L
+        }
+        rd_new <- if (treat == "null_homo")
+                    rdi + (2.0 * n_null_homo) / (2.0 * N)
+                  else
+                    rdi
+        if (abs(rd_new - rd) > 1e-6) re <- re + 1L
+        p <- new_p; rd <- max(0.0, rd_new)
+        if (re == 0L) break
+      }
+
+      a_chr <- as.character(alleles)
+      list(rd=rd, pfreq=stats::setNames(p,a_chr),
+           genefreq_obs=stats::setNames(genefreq_obs,a_chr),
+           H_ii=stats::setNames(H_ii,a_chr), H_iX=stats::setNames(H_iX,a_chr),
+           N=N, efpop=efpop, n_absent=n_absent, n_null_homo=n_null_homo,
+           alleles=alleles, n_valid_geno=n_valid_geno)
+    }
+
+    # ── Weir (1996) FST components ─────────────────────────────────────────────
+    weir_components_allele <- function(pop_list, use_corr = FALSE) {
+      r     <- length(pop_list)
+      N_tot <- sum(sapply(pop_list, `[[`, "ni"))
+      N2    <- sum(sapply(pop_list, function(p) p$ni^2))
+      if (N_tot == 0L || r < 2L) return(list(s2P=0.0, s2I=0.0, s2G=0.0))
+      nc <- (N_tot - N2/N_tot) / (r - 1)
+      if (nc <= 0 || N_tot - r <= 0) return(list(s2P=0.0, s2I=0.0, s2G=0.0))
+      snA  <- sum(sapply(pop_list, `[[`, "nA"))
+      s2A  <- sum(sapply(pop_list, function(p) if(p$ni>0) p$nA^2/(2*p$ni) else 0.0))
+      sAA  <- if (use_corr) sum(sapply(pop_list,`[[`,"AA_corr"))
+              else           sum(sapply(pop_list,`[[`,"AA"))
+      MSG  <- (0.5*snA - sAA) / N_tot
+      MSI  <- (0.5*snA + sAA - s2A) / (N_tot - r)
+      MSP  <- (s2A - 0.5*snA^2/N_tot) / (r - 1)
+      list(s2P=(MSP-MSI)/(2*nc), s2I=0.5*(MSI-MSG), s2G=MSG)
+    }
+
+    # ── CS distance \u2014 FIX: fi/fj, explicit base::pi ────────────────────────────
+    cs_distance <- function(freq_i, freq_j) {
+      alleles <- union(names(freq_i), names(freq_j))
+      csprod  <- 0.0
+      for (a in alleles) {
+        fi <- freq_i[a]; fj <- freq_j[a]
+        fi <- if (is.null(fi)||is.na(fi)) 0.0 else as.numeric(fi)
+        fj <- if (is.null(fj)||is.na(fj)) 0.0 else as.numeric(fj)
+        if (fi > 0 && fj > 0) csprod <- csprod + sqrt(fi * fj)
+      }
+      if (csprod > 1.0) return(NA_real_)
+      (2.0 / base::pi) * sqrt(2.0 * (1.0 - csprod))
+    }
+
+    make_ina_freq <- function(em) c(em$pfreq, `__null__` = em$rd)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  FETCH ALL GENOTYPES
+    # ══════════════════════════════════════════════════════════════════════════
+    raw_data_r <- reactive({
+      db_ready()
+      con   <- con_r(); hs <- hf_schema_r(); ms <- meta_schema_r()
+      hf_q  <- sql_id(con,tbl_hf_r());  meta_q <- sql_id(con,tbl_meta_r())
+      hi_q  <- sql_id(con,hs$ind_col);  hl_q   <- sql_id(con,hs$locus_col)
+      hg_q  <- sql_id(con,hs$gt_col);   mi_q   <- sql_id(con,ms$ind_col)
+      pop_q <- sql_id(con,ms$pop_col)
+
+      if (!DBI::dbExistsTable(con, tbl_hf_r())) {
+        shiny::validate(shiny::need(FALSE, "DuckDB hf table missing."))
+      }
+
+      DBI::dbGetQuery(con, sprintf("
+        WITH %s
+        SELECT
+          CAST(m.%s AS VARCHAR) AS Population,
+          CAST(m.%s AS VARCHAR) AS Individual,
+          CAST(h.%s AS VARCHAR) AS Marker,
+          h.%s                  AS gt
+        FROM %s h
+        INNER JOIN %s m ON CAST(h.%s AS VARCHAR) = CAST(m.%s AS VARCHAR)
+        LEFT JOIN locus_order lo ON CAST(h.%s AS VARCHAR) = lo._lo_marker
+        WHERE m.%s IS NOT NULL
+        ORDER BY lo._lo_rank ASC, Population, Individual",
+        locus_order_cte(con,hf_q,hl_q),
+        pop_q, sql_id(con,ms$ind_col), hl_q, hg_q,
+        hf_q, meta_q, hi_q, mi_q, hl_q, pop_q))
+    })
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  GLOBAL FST (with per-locus accumulators for bootstrap)
+    # ══════════════════════════════════════════════════════════════════════════
+    compute_fst_global_full <- function(em_res) {
+      markers <- names(em_res); pops <- names(em_res[[markers[1]]])
+      s1_vec <- s3_vec <- s1c_vec <- s3c_vec <- numeric(length(markers))
+      rows <- vector("list", length(markers))
+      for (li in seq_along(markers)) {
+        loc <- markers[li]; em_loc <- em_res[[loc]]
+        alleles_obs <- sort(unique(unlist(lapply(em_loc, function(e) e$alleles))))
+        ni_raw  <- sapply(pops, function(p) { e<-em_loc[[p]]; max(0L,e$efpop-e$n_absent-e$n_null_homo) })
+        ni_corr <- sapply(pops, function(p) { e<-em_loc[[p]]; max(0L,e$efpop-e$n_absent) })
+        r_raw <- sum(ni_raw>0L); r_corr <- sum(ni_corr>0L)
+        N_raw <- sum(ni_raw); N2_raw <- sum(ni_raw^2)
+        N_cor <- sum(ni_corr); N2_cor <- sum(ni_corr^2)
+        nc_raw  <- if (N_raw>0&&r_raw>1)  (N_raw -N2_raw /N_raw ) /(r_raw -1) else 0.0
+        nc_corr <- if (N_cor>0&&r_corr>1) (N_cor -N2_cor /N_cor ) /(r_corr-1) else 0.0
+        s1l <- s3l <- s1lc <- s3lc <- 0.0
+        for (a in alleles_obs) {
+          a_chr <- as.character(a)
+          pop_raw <- lapply(pops, function(p) {
+            e <- em_loc[[p]]; ni <- max(0L,e$efpop-e$n_absent-e$n_null_homo)
+            pf <- if (a_chr %in% names(e$genefreq_obs)) e$genefreq_obs[[a_chr]] else 0.0
+            AA <- if (a_chr %in% names(e$H_ii)) e$H_ii[[a_chr]] else 0L
+            list(ni=ni, nA=pf*2L*ni, AA=AA, AA_corr=AA)
+          })
+          cmp <- weir_components_allele(pop_raw, use_corr=FALSE)
+          s1l <- s1l+cmp$s2P; s3l <- s3l+cmp$s2P+cmp$s2I+cmp$s2G
+          pop_ena <- lapply(pops, function(p) {
+            e <- em_loc[[p]]; ni <- max(0L,e$efpop-e$n_absent)
+            pf <- if (a_chr %in% names(e$pfreq)) e$pfreq[[a_chr]] else 0.0
+            AA <- if (a_chr %in% names(e$H_ii)) e$H_ii[[a_chr]] else 0L
+            d  <- pf+2.0*e$rd; AAc <- if (AA>0&&d>0) AA*(pf/d) else 0.0
+            list(ni=ni, nA=pf*2L*ni, AA=AA, AA_corr=AAc)
+          })
+          cmpc <- weir_components_allele(pop_ena, use_corr=TRUE)
+          s1lc <- s1lc+cmpc$s2P; s3lc <- s3lc+cmpc$s2P+cmpc$s2I+cmpc$s2G
+        }
+        fst_loc  <- if (s3l  != 0) s1l /s3l  else NA_real_
+        fst_locc <- if (s3lc != 0) s1lc/s3lc else NA_real_
+        s1_vec[li]  <- s1l *nc_raw;  s3_vec[li]  <- s3l *nc_raw
+        s1c_vec[li] <- s1lc*nc_corr; s3c_vec[li] <- s3lc*nc_corr
+        rows[[li]] <- data.frame(Locus=loc,
+          FST_raw=round(fst_loc,6), FST_ENA=round(fst_locc,6),
+          Delta_FST=round(fst_locc-fst_loc,6),
+          N_pops_raw=r_raw, N_pops_ENA=r_corr, stringsAsFactors=FALSE)
+      }
+      s1 <- sum(s1_vec); s3 <- sum(s3_vec)
+      s1c <- sum(s1c_vec); s3c <- sum(s3c_vec)
+      list(global_raw=if(s3>0)s1/s3 else NA_real_,
+           global_ena=if(s3c>0)s1c/s3c else NA_real_,
+           per_locus=do.call(rbind,rows),
+           s1_vec=s1_vec, s3_vec=s3_vec,
+           s1c_vec=s1c_vec, s3c_vec=s3c_vec,
+           markers=markers)
+    }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PAIRWISE FST (raw + ENA) \u2014 with per-locus accumulators for bootstrap
+    # ══════════════════════════════════════════════════════════════════════════
+    compute_fst_pairwise <- function(em_res) {
+      markers <- names(em_res); pops <- names(em_res[[markers[1]]]); n_pops <- length(pops)
+      if (n_pops < 2L) return(list(matrix_raw=NULL,matrix_ena=NULL,long=data.frame(),
+                                   s1_raw=NULL,s3_raw=NULL,s1_ena=NULL,s3_ena=NULL,pairs=NULL))
+      pairs   <- combn(pops,2,simplify=FALSE); n_pairs <- length(pairs)
+      s12p  <- matrix(0.0,n_pops,n_pops,dimnames=list(pops,pops))
+      s32p  <- matrix(0.0,n_pops,n_pops,dimnames=list(pops,pops))
+      s12pc <- matrix(0.0,n_pops,n_pops,dimnames=list(pops,pops))
+      s32pc <- matrix(0.0,n_pops,n_pops,dimnames=list(pops,pops))
+      s1_raw_ml <- matrix(0.0,n_pairs,length(markers))
+      s3_raw_ml <- matrix(0.0,n_pairs,length(markers))
+      s1_ena_ml <- matrix(0.0,n_pairs,length(markers))
+      s3_ena_ml <- matrix(0.0,n_pairs,length(markers))
+
+      for (li in seq_along(markers)) {
+        loc <- markers[li]; em_loc <- em_res[[loc]]
+        alleles_obs <- sort(unique(unlist(lapply(em_loc, function(e) e$alleles))))
+        for (ii in seq_len(n_pops-1L)) {
+          for (jj in seq(ii+1L,n_pops)) {
+            pi_n <- pops[ii]; pj_n <- pops[jj]
+            ei <- em_loc[[pi_n]]; ej <- em_loc[[pj_n]]
+            ni_ri <- max(0L,ei$efpop-ei$n_absent-ei$n_null_homo)
+            ni_rj <- max(0L,ej$efpop-ej$n_absent-ej$n_null_homo)
+            ni_ci <- max(0L,ei$efpop-ei$n_absent)
+            ni_cj <- max(0L,ej$efpop-ej$n_absent)
+            N_r   <- ni_ri+ni_rj; N2_r <- ni_ri^2+ni_rj^2
+            N_c   <- ni_ci+ni_cj; N2_c <- ni_ci^2+ni_cj^2
+            nc_r  <- if (N_r>0&&ni_ri>0&&ni_rj>0) (N_r-N2_r/N_r) else 0.0
+            nc_c  <- if (N_c>0&&ni_ci>0&&ni_cj>0) (N_c-N2_c/N_c) else 0.0
+            pi_idx <- which(sapply(pairs, function(p) p[1]==pi_n && p[2]==pj_n))
+            for (a in alleles_obs) {
+              a_chr <- as.character(a)
+              if (nc_r > 0) {
+                pd <- list(
+                  list(ni=ni_ri, nA=(if(a_chr %in% names(ei$genefreq_obs)) ei$genefreq_obs[[a_chr]] else 0.0)*2L*ni_ri,
+                       AA=if(a_chr %in% names(ei$H_ii)) ei$H_ii[[a_chr]] else 0L, AA_corr=0.0),
+                  list(ni=ni_rj, nA=(if(a_chr %in% names(ej$genefreq_obs)) ej$genefreq_obs[[a_chr]] else 0.0)*2L*ni_rj,
+                       AA=if(a_chr %in% names(ej$H_ii)) ej$H_ii[[a_chr]] else 0L, AA_corr=0.0))
+                cmp <- weir_components_allele(pd, use_corr=FALSE)
+                s12p[ii,jj] <- s12p[ii,jj]+cmp$s2P*nc_r
+                s32p[ii,jj] <- s32p[ii,jj]+(cmp$s2P+cmp$s2I+cmp$s2G)*nc_r
+                if (length(pi_idx)==1) {
+                  s1_raw_ml[pi_idx,li] <- s1_raw_ml[pi_idx,li]+cmp$s2P*nc_r
+                  s3_raw_ml[pi_idx,li] <- s3_raw_ml[pi_idx,li]+(cmp$s2P+cmp$s2I+cmp$s2G)*nc_r
+                }
+              }
+              if (nc_c > 0) {
+                pf_i <- if(a_chr %in% names(ei$pfreq)) ei$pfreq[[a_chr]] else 0.0
+                pf_j <- if(a_chr %in% names(ej$pfreq)) ej$pfreq[[a_chr]] else 0.0
+                AA_i <- if(a_chr %in% names(ei$H_ii)) ei$H_ii[[a_chr]] else 0L
+                AA_j <- if(a_chr %in% names(ej$H_ii)) ej$H_ii[[a_chr]] else 0L
+                di   <- pf_i+2.0*ei$rd; dj <- pf_j+2.0*ej$rd
+                pdc  <- list(
+                  list(ni=ni_ci, nA=pf_i*2L*ni_ci, AA=AA_i, AA_corr=if(AA_i>0&&di>0) AA_i*(pf_i/di) else 0.0),
+                  list(ni=ni_cj, nA=pf_j*2L*ni_cj, AA=AA_j, AA_corr=if(AA_j>0&&dj>0) AA_j*(pf_j/dj) else 0.0))
+                cmpc <- weir_components_allele(pdc, use_corr=TRUE)
+                s12pc[ii,jj] <- s12pc[ii,jj]+cmpc$s2P*nc_c
+                s32pc[ii,jj] <- s32pc[ii,jj]+(cmpc$s2P+cmpc$s2I+cmpc$s2G)*nc_c
+                if (length(pi_idx)==1) {
+                  s1_ena_ml[pi_idx,li] <- s1_ena_ml[pi_idx,li]+cmpc$s2P*nc_c
+                  s3_ena_ml[pi_idx,li] <- s3_ena_ml[pi_idx,li]+(cmpc$s2P+cmpc$s2I+cmpc$s2G)*nc_c
+                }
+              }
+            }
+          }
+        }
+      }
+      mat_raw <- matrix(NA_real_,n_pops,n_pops,dimnames=list(pops,pops))
+      mat_ena <- matrix(NA_real_,n_pops,n_pops,dimnames=list(pops,pops))
+      for (ii in seq_len(n_pops-1L)) for (jj in seq(ii+1L,n_pops)) {
+        mat_raw[jj,ii] <- if (s32p[ii,jj] >0) s12p[ii,jj] /s32p[ii,jj]  else NA_real_
+        mat_ena[jj,ii] <- if (s32pc[ii,jj]>0) s12pc[ii,jj]/s32pc[ii,jj] else NA_real_
+      }
+      long_rows <- list()
+      for (ii in seq_len(n_pops-1L)) for (jj in seq(ii+1L,n_pops))
+        long_rows[[length(long_rows)+1L]] <- data.frame(
+          Pop1=pops[ii], Pop2=pops[jj],
+          FST_raw=round(mat_raw[jj,ii],6), FST_ENA=round(mat_ena[jj,ii],6),
+          Delta_FST=round(mat_ena[jj,ii]-mat_raw[jj,ii],6), stringsAsFactors=FALSE)
+      list(matrix_raw=mat_raw, matrix_ena=mat_ena, long=do.call(rbind,long_rows),
+           s1_raw=s1_raw_ml, s3_raw=s3_raw_ml,
+           s1_ena=s1_ena_ml, s3_ena=s3_ena_ml,
+           pairs=pairs, markers=markers)
+    }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PAIRWISE DCSE (raw + INA) \u2014 with per-locus accumulators for bootstrap
+    # ══════════════════════════════════════════════════════════════════════════
+    compute_dc_pairwise <- function(em_res) {
+      markers <- names(em_res); pops <- names(em_res[[markers[1]]]); n_pops <- length(pops)
+      if (n_pops < 2L) return(list(matrix_raw=NULL,matrix_ina=NULL,long=data.frame(),
+                                   dc_raw=NULL,dc_ina=NULL,pairs=NULL))
+      pairs   <- combn(pops,2,simplify=FALSE); n_pairs <- length(pairs)
+      dc_sum_raw <- matrix(0.0,n_pops,n_pops,dimnames=list(pops,pops))
+      dc_sum_ina <- matrix(0.0,n_pops,n_pops,dimnames=list(pops,pops))
+      nloc_eff   <- matrix(length(markers),n_pops,n_pops,dimnames=list(pops,pops))
+      nloc_eff_c <- matrix(length(markers),n_pops,n_pops,dimnames=list(pops,pops))
+      dc_raw_ml  <- matrix(NA_real_,n_pairs,length(markers))
+      dc_ina_ml  <- matrix(NA_real_,n_pairs,length(markers))
+      for (li in seq_along(markers)) {
+        loc <- markers[li]; em_loc <- em_res[[loc]]
+        for (ii in seq_len(n_pops-1L)) {
+          for (jj in seq(ii+1L,n_pops)) {
+            ei <- em_loc[[pops[ii]]]; ej <- em_loc[[pops[jj]]]
+            ni_ri <- ei$efpop-ei$n_absent-ei$n_null_homo
+            ni_rj <- ej$efpop-ej$n_absent-ej$n_null_homo
+            ni_ci <- ei$efpop-ei$n_absent; ni_cj <- ej$efpop-ej$n_absent
+            pi_idx <- which(sapply(pairs, function(p) p[1]==pops[ii] && p[2]==pops[jj]))
+            if (ni_ri>0L&&ni_rj>0L&&length(ei$genefreq_obs)>0&&length(ej$genefreq_obs)>0) {
+              d_raw <- cs_distance(ei$genefreq_obs, ej$genefreq_obs)
+              if (!is.na(d_raw)) {
+                dc_sum_raw[jj,ii] <- dc_sum_raw[jj,ii]+d_raw
+                if (length(pi_idx)==1) dc_raw_ml[pi_idx,li] <- d_raw
+              } else nloc_eff[jj,ii] <- nloc_eff[jj,ii]-1L
+            } else nloc_eff[jj,ii] <- nloc_eff[jj,ii]-1L
+            if (ni_ci>0L&&ni_cj>0L) {
+              d_ina <- cs_distance(make_ina_freq(ei), make_ina_freq(ej))
+              if (!is.na(d_ina)) {
+                dc_sum_ina[jj,ii] <- dc_sum_ina[jj,ii]+d_ina
+                if (length(pi_idx)==1) dc_ina_ml[pi_idx,li] <- d_ina
+              } else nloc_eff_c[jj,ii] <- nloc_eff_c[jj,ii]-1L
+            } else nloc_eff_c[jj,ii] <- nloc_eff_c[jj,ii]-1L
+          }
+        }
+      }
+      mat_raw <- matrix(NA_real_,n_pops,n_pops,dimnames=list(pops,pops))
+      mat_ina <- matrix(NA_real_,n_pops,n_pops,dimnames=list(pops,pops))
+      for (ii in seq_len(n_pops-1L)) for (jj in seq(ii+1L,n_pops)) {
+        mat_raw[jj,ii] <- if(nloc_eff[jj,ii]  >0L) dc_sum_raw[jj,ii]/nloc_eff[jj,ii]   else NA_real_
+        mat_ina[jj,ii] <- if(nloc_eff_c[jj,ii]>0L) dc_sum_ina[jj,ii]/nloc_eff_c[jj,ii] else NA_real_
+      }
+      long_rows <- list()
+      for (ii in seq_len(n_pops-1L)) for (jj in seq(ii+1L,n_pops))
+        long_rows[[length(long_rows)+1L]] <- data.frame(
+          Pop1=pops[ii], Pop2=pops[jj],
+          DCSE_raw=round(mat_raw[jj,ii],6), DCSE_INA=round(mat_ina[jj,ii],6),
+          Delta_DCSE=round(mat_ina[jj,ii]-mat_raw[jj,ii],6), stringsAsFactors=FALSE)
+      list(matrix_raw=mat_raw, matrix_ina=mat_ina, long=do.call(rbind,long_rows),
+           dc_raw=dc_raw_ml, dc_ina=dc_ina_ml, pairs=pairs, markers=markers)
+    }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  BOOTSTRAP OVER LOCI \u2014 vectorised
+    # ══════════════════════════════════════════════════════════════════════════
+    boot_loci_global_fst <- function(fst_full, nboot, alpha) {
+      L   <- length(fst_full$markers)
+      idx <- matrix(sample.int(L, L*nboot, replace=TRUE), nrow=nboot)
+      S1  <- matrix(fst_full$s1_vec[idx],  nrow=nboot)
+      S3  <- matrix(fst_full$s3_vec[idx],  nrow=nboot)
+      S1c <- matrix(fst_full$s1c_vec[idx], nrow=nboot)
+      S3c <- matrix(fst_full$s3c_vec[idx], nrow=nboot)
+      fst_raw_b <- ifelse(rowSums(S3) >0, rowSums(S1) /rowSums(S3),  NA_real_)
+      fst_ena_b <- ifelse(rowSums(S3c)>0, rowSums(S1c)/rowSums(S3c), NA_real_)
       list(
-        pw       = pw,
-        dist_mat = dist_mat,
-        reg_avg  = reg_avg,
-        reg_ls   = reg_ls,
-        reg_li   = reg_li,
-        mantel   = mantel,
-        use_log  = use_log
+        raw = quantile(fst_raw_b, c(alpha/2, 0.5, 1-alpha/2), na.rm=TRUE),
+        ena = quantile(fst_ena_b, c(alpha/2, 0.5, 1-alpha/2), na.rm=TRUE)
+      )
+    }
+
+    boot_loci_pair_fst <- function(pair_res, nboot, alpha) {
+      L       <- length(pair_res$markers)
+      n_pairs <- length(pair_res$pairs)
+      idx     <- matrix(sample.int(L, L*nboot, replace=TRUE), nrow=nboot)
+      results <- vector("list", n_pairs)
+      for (pi in seq_len(n_pairs)) {
+        s1r <- pair_res$s1_raw[pi,]; s3r <- pair_res$s3_raw[pi,]
+        s1e <- pair_res$s1_ena[pi,]; s3e <- pair_res$s3_ena[pi,]
+        RS1r <- rowSums(matrix(s1r[idx],nrow=nboot)); RS3r <- rowSums(matrix(s3r[idx],nrow=nboot))
+        RS1e <- rowSums(matrix(s1e[idx],nrow=nboot)); RS3e <- rowSums(matrix(s3e[idx],nrow=nboot))
+        br <- ifelse(RS3r>0,RS1r/RS3r,NA_real_); be <- ifelse(RS3e>0,RS1e/RS3e,NA_real_)
+        results[[pi]] <- data.frame(
+          Pop1         = pair_res$pairs[[pi]][1],
+          Pop2         = pair_res$pairs[[pi]][2],
+          FST_ENA_obs  = round(if(sum(s3e)>0)sum(s1e)/sum(s3e) else NA_real_,6),
+          CI_lo_ENA    = round(quantile(be,alpha/2,na.rm=TRUE),6),
+          Median_ENA   = round(quantile(be,0.5,na.rm=TRUE),6),
+          CI_hi_ENA    = round(quantile(be,1-alpha/2,na.rm=TRUE),6),
+          FST_raw_obs  = round(if(sum(s3r)>0)sum(s1r)/sum(s3r) else NA_real_,6),
+          CI_lo_raw    = round(quantile(br,alpha/2,na.rm=TRUE),6),
+          CI_hi_raw    = round(quantile(br,1-alpha/2,na.rm=TRUE),6),
+          stringsAsFactors=FALSE)
+      }
+      do.call(rbind, results)
+    }
+
+    boot_loci_pair_dc <- function(dc_res, nboot, alpha) {
+      L       <- length(dc_res$markers)
+      n_pairs <- length(dc_res$pairs)
+      idx     <- matrix(sample.int(L, L*nboot, replace=TRUE), nrow=nboot)
+      results <- vector("list", n_pairs)
+      for (pi in seq_len(n_pairs)) {
+        dr <- dc_res$dc_raw[pi,]; di <- dc_res$dc_ina[pi,]
+        br <- rowMeans(matrix(dr[idx],nrow=nboot),na.rm=TRUE)
+        bi <- rowMeans(matrix(di[idx],nrow=nboot),na.rm=TRUE)
+        results[[pi]] <- data.frame(
+          Pop1         = dc_res$pairs[[pi]][1],
+          Pop2         = dc_res$pairs[[pi]][2],
+          DCSE_INA_obs = round(mean(di,na.rm=TRUE),6),
+          CI_lo_INA    = round(quantile(bi,alpha/2,na.rm=TRUE),6),
+          Median_INA   = round(quantile(bi,0.5,na.rm=TRUE),6),
+          CI_hi_INA    = round(quantile(bi,1-alpha/2,na.rm=TRUE),6),
+          DCSE_raw_obs = round(mean(dr,na.rm=TRUE),6),
+          CI_lo_raw    = round(quantile(br,alpha/2,na.rm=TRUE),6),
+          CI_hi_raw    = round(quantile(br,1-alpha/2,na.rm=TRUE),6),
+          stringsAsFactors=FALSE)
+      }
+      do.call(rbind, results)
+    }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  MAIN REACTIVE \u2014 single "run_all" button
+    # ══════════════════════════════════════════════════════════════════════════
+    results_r <- eventReactive(input$run_all, {
+      req(db_ready())
+      nboot  <- max(100L, min(99999L, as.integer(input$nboot %||% 5000L)))
+      alpha  <- as.numeric(input$ci_level %||% "0.05")
+      ci     <- ci_bounds(alpha)
+      base   <- as.integer(base_r())
+      treats <- locus_treatments_r()
+      markers <- markers_r(); pops <- pops_r()
+
+      withProgress(message = "Running computations...", value = 0, {
+
+        setProgress(0.03, detail = "Fetching genotypes from database...")
+        raw_df <- raw_data_r()
+        shiny::validate(shiny::need(nrow(raw_df)>0, "No genotype data found."))
+
+        setProgress(0.08, detail = "EM algorithm (null allele frequencies)...")
+        em_res <- list()
+        for (loc in markers) {
+          em_res[[loc]] <- list()
+          treat <- as.character(treats[loc] %||% "absent")
+          for (pop in pops) {
+            gts <- raw_df$gt[raw_df$Marker==loc & raw_df$Population==pop]
+            em_res[[loc]][[pop]] <-
+              if (length(gts)==0L)
+                list(rd=0.0,pfreq=numeric(0),genefreq_obs=numeric(0),
+                     H_ii=numeric(0),H_iX=numeric(0),N=0L,efpop=0L,
+                     n_absent=0L,n_null_homo=0L,alleles=integer(0),n_valid_geno=0L)
+              else em_freena(gts, base, treat)
+          }
+        }
+
+        setProgress(0.15, detail = "Global FST and FST-ENA...")
+        fst_global <- compute_fst_global_full(em_res)
+
+        setProgress(0.25, detail = "Pairwise FST and FST-ENA...")
+        fst_pair <- compute_fst_pairwise(em_res)
+
+        setProgress(0.35, detail = "Pairwise DCSE and DCSE-INA...")
+        dc_pair <- compute_dc_pairwise(em_res)
+
+        setProgress(0.45, detail = sprintf("Bootstrap over loci (%d reps)...", nboot))
+        boot_gl_loci     <- boot_loci_global_fst(fst_global, nboot, alpha)
+        boot_pair_fst    <- boot_loci_pair_fst(fst_pair, nboot, alpha)
+        boot_pair_dc     <- boot_loci_pair_dc(dc_pair, nboot, alpha)
+
+        # ── p_nulls tables ──────────────────────────────────────────────────
+        setProgress(0.70, detail = "Assembling null allele tables...")
+        t1_rows <- list()
+        for (loc in markers) {
+          for (pop in pops) {
+            e       <- em_res[[loc]][[pop]]
+            n_total <- as.integer(e$efpop)
+            n_exp   <- n_total * (e$rd^2)
+            t1_rows[[length(t1_rows)+1L]] <- data.frame(
+              Locus        = loc,
+              Population   = pop,
+              Coding       = as.character(treats[loc] %||% "absent"),
+              p_nulls      = round(e$rd, 6),
+              N            = n_total,
+              N_absent     = as.integer(e$n_absent),
+              N_exp_blanks = round(n_exp, 6),
+              p_nulls_x_N  = round(e$rd * n_total, 6),
+              stringsAsFactors=FALSE)
+          }
+        }
+        t1 <- do.call(rbind, t1_rows)
+        t1$Locus <- factor(t1$Locus, levels=markers)
+        t1 <- t1[order(t1$Locus, t1$Population),]
+        t1$Locus <- as.character(t1$Locus)
+
+        t2_rows <- lapply(markers, function(loc) {
+          sub  <- t1[t1$Locus==loc,,drop=FALSE]
+          vidx <- !is.na(sub$p_nulls)
+          n_tot    <- sum(sub$N)
+          n_blanks <- sum(sub$N_absent)
+          av_p  <- if (any(vidx)&&sum(sub$N[vidx])>0)
+            sum(sub$p_nulls[vidx]*sub$N[vidx]) / sum(sub$N[vidx]) else NA_real_
+          av_n  <- sum(sub$N*(sub$p_nulls^2), na.rm=TRUE)
+          f_exp <- if (!is.na(av_n)&&n_tot>0) av_n/n_tot else NA_real_
+          data.frame(
+            Locus        = loc,
+            Coding       = as.character(treats[loc] %||% "absent"),
+            Av_p_nulls   = round(av_p,  6),
+            Av_N_exp     = round(av_n,  6),
+            N_tot        = n_tot,
+            N_blanks     = n_blanks,
+            f_expBlanks  = round(f_exp, 6),
+            stringsAsFactors=FALSE)
+        })
+        t2 <- do.call(rbind, t2_rows)
+
+        # ── Geographic distances ────────────────────────────────────────────
+        setProgress(0.85, detail = "Computing geographic distances (Haversine)...")
+        geo_mat <- NULL
+        geo_long <- NULL
+        tryCatch({
+          coords <- gps_coords_r()
+          # Keep only populations that have both genotypes and GPS
+          common_pops <- intersect(pops, coords$Population)
+          if (length(common_pops) >= 2L) {
+            coords_sub <- coords[coords$Population %in% common_pops, , drop = FALSE]
+            geo_mat <- geo_dist_matrix(coords_sub)
+            # Build long format (lower triangle)
+            gps_pops <- coords_sub$Population
+            n_gps <- length(gps_pops)
+            geo_rows <- list()
+            for (ii in seq_len(n_gps - 1L)) {
+              for (jj in (ii + 1L):n_gps) {
+                d <- geo_mat[gps_pops[ii], gps_pops[jj]]
+                geo_rows[[length(geo_rows) + 1L]] <- data.frame(
+                  Pop1   = gps_pops[ii],
+                  Pop2   = gps_pops[jj],
+                  Dgeo   = round(d, 4),
+                  lnDgeo = round(log(d), 4),
+                  stringsAsFactors = FALSE
+                )
+              }
+            }
+            geo_long <- do.call(rbind, geo_rows)
+          }
+        }, error = function(e) NULL)
+
+        setProgress(0.95, detail = "Merging pairwise tables...")
+
+        list(
+          t1 = t1, t2 = t2,
+          fst_global    = fst_global,
+          fst_pair      = fst_pair,
+          dc_pair       = dc_pair,
+          boot_gl_loci  = boot_gl_loci,
+          boot_pair_fst = boot_pair_fst,
+          boot_pair_dc  = boot_pair_dc,
+          geo_mat  = geo_mat,
+          geo_long = geo_long,
+          nboot = nboot, alpha = alpha, ci = ci,
+          treats = treats, markers = markers, pops = pops,
+          em_res = em_res
+        )
+      })
+    })
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  METADATA HEADER for output files
+    # ══════════════════════════════════════════════════════════════════════════
+    meta_header <- function(r, file_desc) {
+      ci_pct <- paste0(round((1 - r$alpha) * 100, 3), "%")
+      treat_summary <- paste(sapply(r$markers, function(loc) {
+        cd <- as.character(r$treats[loc] %||% "absent")
+        sprintf("%s:%s", loc, if(cd=="absent") "000000" else "999999")
+      }), collapse=", ")
+      c(
+        paste0("# ", file_desc),
+        "# Method: Expectation-Maximization (EM) \u2014 Dempster, Laird & Rubin (1977)",
+        "# ENA correction (Excluding Null Alleles) \u2014 Chapuis & Estoup (2007) / FreeNA",
+        "# INA correction (Including Null Alleles) \u2014 Chapuis & Estoup (2007) / FreeNA",
+        "# FST: Weir (1996) following Genepop method",
+        "# DCSE: Cavalli-Sforza & Edwards (1967) chord genetic distance",
+        "# Dgeo: Haversine great-circle distance (km) between population GPS centroids",
+        paste0("# Bootstrap replicates (over loci): ", r$nboot),
+        paste0("# Confidence interval: ", ci_pct, " (alpha = ", r$alpha, ")"),
+        paste0("# Locus coding (000000=absent/PCR failure; 999999=null homozygote):"),
+        paste0("#   ", treat_summary),
+        "#"
+      )
+    }
+
+    write_with_header <- function(hdr, df, file, sep = ",") {
+      writeLines(hdr, con = file)
+      write.table(df, file = file, sep = sep, row.names = FALSE,
+                  quote = FALSE, append = TRUE, col.names = TRUE)
+    }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  FILE 1 \u2014 Null allele frequencies
+    # ══════════════════════════════════════════════════════════════════════════
+    file1_data <- reactive({
+      r <- results_r()
+      list(
+        header = meta_header(r, "File 1 \u2014 Null allele frequencies per locus x population"),
+        t1 = r$t1, t2 = r$t2
       )
     })
 
-    # ── Summary boxes ──────────────────────────────────────────────────────
-    output$box_npops <- renderValueBox({
-      r <- results_r()
-      n <- length(unique(c(r$pw$pop_i, r$pw$pop_j)))
-      valueBox(n, HTML("Populations<br>with GPS"), icon = icon("map-marker-alt"), color = "teal")
-    })
-    output$box_npairs <- renderValueBox({
-      valueBox(nrow(results_r()$pw), HTML("Population<br>pairs"),
-               icon = icon("project-diagram"), color = "blue")
-    })
-    output$box_mantel_r <- renderValueBox({
-      r <- results_r()
-      valueBox(round(r$mantel$r, 4), HTML("Mantel r"),
-               icon = icon("chart-line"), color = "purple")
-    })
-    output$box_pval <- renderValueBox({
-      pv  <- results_r()$mantel$p_value
-      col <- if (!is.na(pv) && pv < 0.05) "green" else "yellow"
-      valueBox(
-        if (is.na(pv)) "NA" else formatC(pv, format = "f", digits = 4),
-        HTML("Mantel p-value<br>(one-sided)"),
-        icon = icon("check-circle"), color = col)
-    })
+    output$dl_file1_csv <- downloadHandler(
+      filename = function() paste0("null_allele_frequencies_", Sys.Date(), ".csv"),
+      content  = function(file) {
+        d <- file1_data()
+        hdr <- c(d$header, "# Section 1: p_nulls per locus x population", "#")
+        write_with_header(hdr, d$t1, file, sep = ",")
+        write("", file = file, append = TRUE)
+        write("# Section 2: N-weighted mean per locus", file = file, append = TRUE)
+        write.table(d$t2, file = file, sep = ",", row.names = FALSE,
+                    quote = FALSE, append = TRUE, col.names = TRUE)
+      }
+    )
+    output$dl_file1_txt <- downloadHandler(
+      filename = function() paste0("null_allele_frequencies_", Sys.Date(), ".txt"),
+      content  = function(file) {
+        d <- file1_data()
+        hdr <- c(d$header, "# Section 1: p_nulls per locus x population", "#")
+        write_with_header(hdr, d$t1, file, sep = "\t")
+        write("", file = file, append = TRUE)
+        write("# Section 2: N-weighted mean per locus", file = file, append = TRUE)
+        write.table(d$t2, file = file, sep = "\t", row.names = FALSE,
+                    quote = FALSE, append = TRUE, col.names = TRUE)
+      }
+    )
 
-    # ── Regression parameters table (b, Nb, Nem) ──────────────────────────
-    output$reg_table <- DT::renderDT({
+    # ══════════════════════════════════════════════════════════════════════════
+    #  FILE 2 \u2014 Global FST & FST-ENA with bootstrap CIs
+    # ══════════════════════════════════════════════════════════════════════════
+    file2_data <- reactive({
       r <- results_r()
-      fmt6 <- function(x) if (is.na(x)) "NA" else formatC(x, format = "f", digits = 4)
-      fmt1 <- function(x) if (is.na(x)) "NA" else formatC(x, format = "f", digits = 1)
-      df <- data.frame(
-        Line      = c("Average", "Upper CI (ls)", "Lower CI (li)"),
-        b         = sapply(list(r$reg_avg, r$reg_ls, r$reg_li), function(x) fmt6(x$b)),
-        Intercept = sapply(list(r$reg_avg, r$reg_ls, r$reg_li), function(x) fmt6(x$intercept)),
-        Nb        = sapply(list(r$reg_avg, r$reg_ls, r$reg_li), function(x) fmt1(x$Nb)),
-        Nem       = sapply(list(r$reg_avg, r$reg_ls, r$reg_li), function(x) fmt1(x$Nem)),
+      ci_pct <- paste0(round((1-r$alpha)*100,3), "%")
+      pl <- r$fst_global$per_locus
+      glob <- data.frame(
+        Locus           = "GLOBAL_MULTILOCUS",
+        FST_raw         = round(r$fst_global$global_raw, 6),
+        FST_ENA         = round(r$fst_global$global_ena, 6),
+        Delta_FST       = round(r$fst_global$global_ena - r$fst_global$global_raw, 6),
+        CI_lo_raw_loci  = round(r$boot_gl_loci$raw[1], 6),
+        CI_hi_raw_loci  = round(r$boot_gl_loci$raw[3], 6),
+        CI_lo_ENA_loci  = round(r$boot_gl_loci$ena[1], 6),
+        CI_hi_ENA_loci  = round(r$boot_gl_loci$ena[3], 6),
+        N_pops_raw = NA_integer_, N_pops_ENA = NA_integer_,
         stringsAsFactors = FALSE
       )
-      DT::datatable(df, rownames = FALSE,
-        options = list(dom = "t", pageLength = 3, ordering = FALSE),
-        class   = "compact stripe") %>%
-        DT::formatStyle("Line",
-          target = "row",
-          backgroundColor = DT::styleEqual(
-            c("Average", "Upper CI (ls)", "Lower CI (li)"),
-            c("#f5f5f5",  "#fff0f0",       "#f0f8ff")))
+      pl$CI_lo_raw_loci <- NA_real_; pl$CI_hi_raw_loci <- NA_real_
+      pl$CI_lo_ENA_loci <- NA_real_; pl$CI_hi_ENA_loci <- NA_real_
+      out <- rbind(glob[, names(pl)], pl)
+      list(header = meta_header(r, "File 2 \u2014 Global FST and FST-ENA with bootstrap CIs"),
+           data   = out)
     })
 
-    # ── IBD plot: scatter + 3 regression lines ─────────────────────────────
-    output$ibd_plot <- plotly::renderPlotly({
-      r      <- results_r()
-      pw     <- r$pw
-      use_log <- r$use_log
+    output$dl_file2_csv <- downloadHandler(
+      filename = function() paste0("global_FST_ENA_CI_", Sys.Date(), ".csv"),
+      content  = function(file) { d <- file2_data()
+        write_with_header(d$header, d$data, file, sep=",") }
+    )
+    output$dl_file2_txt <- downloadHandler(
+      filename = function() paste0("global_FST_ENA_CI_", Sys.Date(), ".txt"),
+      content  = function(file) { d <- file2_data()
+        write_with_header(d$header, d$data, file, sep="\t") }
+    )
 
-      xv      <- if (use_log) log(pw$dist_km) else pw$dist_km
-      x_label <- if (use_log) "ln(geographic distance, km)" else "Geographic distance (km)"
-      x_seq   <- seq(min(xv, na.rm = TRUE), max(xv, na.rm = TRUE), length.out = 100)
+    # ══════════════════════════════════════════════════════════════════════════
+    #  FILE 3 \u2014 Pairwise long format with Dgeo + bootstrap CI
+    # ══════════════════════════════════════════════════════════════════════════
+    file3_data <- reactive({
+      r <- results_r()
+      fst_l <- r$fst_pair$long
+      dc_l  <- r$dc_pair$long
+      bf    <- r$boot_pair_fst
+      bd    <- r$boot_pair_dc
 
-      reg_line <- function(params) {
-        if (any(is.na(c(params$intercept, params$b)))) return(NULL)
-        data.frame(x = x_seq, y = params$intercept + params$b * x_seq)
+      merged <- merge(fst_l, dc_l, by=c("Pop1","Pop2"), all=TRUE)
+
+      # Add Dgeo if available
+      if (!is.null(r$geo_long) && nrow(r$geo_long) > 0) {
+        merged <- merge(merged, r$geo_long, by = c("Pop1", "Pop2"), all.x = TRUE)
+      } else {
+        merged$Dgeo   <- NA_real_
+        merged$lnDgeo <- NA_real_
       }
-      line_avg <- reg_line(r$reg_avg)
-      line_ls  <- reg_line(r$reg_ls)
-      line_li  <- reg_line(r$reg_li)
 
-      # Build plot
-      p <- plotly::plot_ly() %>%
+      # Add bootstrap CI for FST
+      if (!is.null(bf) && nrow(bf) > 0) {
+        bf_sub <- bf[, c("Pop1","Pop2","FST_ENA_obs","CI_lo_ENA","CI_hi_ENA",
+                         "FST_raw_obs","CI_lo_raw","CI_hi_raw")]
+        merged <- merge(merged, bf_sub, by = c("Pop1","Pop2"), all.x = TRUE)
+      }
+      # Add bootstrap CI for DCSE
+      if (!is.null(bd) && nrow(bd) > 0) {
+        bd_sub <- bd[, c("Pop1","Pop2","DCSE_INA_obs","CI_lo_INA","CI_hi_INA",
+                         "DCSE_raw_obs","CI_lo_raw","CI_hi_raw")]
+        names(bd_sub) <- c("Pop1","Pop2",
+                           "DCSE_INA_obs","DCSE_CI_lo","DCSE_CI_hi",
+                           "DCSE_raw_obs","DCSE_raw_CI_lo","DCSE_raw_CI_hi")
+        merged <- merge(merged, bd_sub, by = c("Pop1","Pop2"), all.x = TRUE)
+      }
 
-        # Error bars (CI segment per point)
-        plotly::add_segments(
-          data = pw,
-          x = ~xv, xend = ~xv, y = ~FR_i, yend = ~FR_s,
-          line = list(color = "rgba(100,100,100,0.35)", width = 1),
-          showlegend = FALSE, hoverinfo = "none"
-        ) %>%
+      # Reorder columns
+      cols_order <- c("Pop1","Pop2","Dgeo","lnDgeo",
+                      "FST_raw","FST_ENA","Delta_FST",
+                      "FST_raw_obs","CI_lo_raw","CI_hi_raw",
+                      "FST_ENA_obs","CI_lo_ENA","CI_hi_ENA",
+                      "DCSE_raw","DCSE_INA","Delta_DCSE",
+                      "DCSE_raw_obs","DCSE_raw_CI_lo","DCSE_raw_CI_hi",
+                      "DCSE_INA_obs","DCSE_CI_lo","DCSE_CI_hi")
+      cols_order <- cols_order[cols_order %in% names(merged)]
+      merged <- merged[, cols_order, drop = FALSE]
 
-        # Scatter points
+      list(header = meta_header(r, "File 3 \u2014 Pairwise statistics (genetic + geographic + bootstrap CI)"),
+           data   = merged)
+    })
+
+    output$dl_file3_csv <- downloadHandler(
+      filename = function() paste0("pairwise_long_Dgeo_CI_", Sys.Date(), ".csv"),
+      content  = function(file) { d <- file3_data()
+        write_with_header(d$header, d$data, file, sep=",") }
+    )
+    output$dl_file3_txt <- downloadHandler(
+      filename = function() paste0("pairwise_long_Dgeo_CI_", Sys.Date(), ".txt"),
+      content  = function(file) { d <- file3_data()
+        write_with_header(d$header, d$data, file, sep="\t") }
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  FILE 4 \u2014 Per-locus half-matrices
+    # ══════════════════════════════════════════════════════════════════════════
+    # (Compute per-locus pairwise on demand)
+    compute_per_locus_pair <- function(em_res) {
+      markers <- names(em_res); pops <- names(em_res[[markers[1]]])
+      rows_fst <- rows_dc <- list()
+      for (loc in markers) {
+        em_loc <- em_res[[loc]]
+        alleles_obs <- sort(unique(unlist(lapply(em_loc, function(e) e$alleles))))
+        for (ii in seq_len(length(pops)-1L)) {
+          for (jj in seq(ii+1L,length(pops))) {
+            pi_n <- pops[ii]; pj_n <- pops[jj]
+            ei <- em_loc[[pi_n]]; ej <- em_loc[[pj_n]]
+            ni_ri <- max(0L,ei$efpop-ei$n_absent-ei$n_null_homo)
+            ni_rj <- max(0L,ej$efpop-ej$n_absent-ej$n_null_homo)
+            ni_ci <- max(0L,ei$efpop-ei$n_absent)
+            ni_cj <- max(0L,ej$efpop-ej$n_absent)
+            N_r <- ni_ri+ni_rj; N_c <- ni_ci+ni_cj
+            nc_r <- if(N_r>0&&ni_ri>0&&ni_rj>0) (N_r-(ni_ri^2+ni_rj^2)/N_r) else 0.0
+            nc_c <- if(N_c>0&&ni_ci>0&&ni_cj>0) (N_c-(ni_ci^2+ni_cj^2)/N_c) else 0.0
+            s1_r<-s3_r<-s1_c<-s3_c<-0.0
+            for (a in alleles_obs) {
+              a_chr <- as.character(a)
+              if (nc_r>0) {
+                pd <- list(
+                  list(ni=ni_ri,nA=(if(a_chr %in% names(ei$genefreq_obs))ei$genefreq_obs[[a_chr]] else 0.0)*2L*ni_ri,
+                       AA=if(a_chr %in% names(ei$H_ii))ei$H_ii[[a_chr]] else 0L,AA_corr=0.0),
+                  list(ni=ni_rj,nA=(if(a_chr %in% names(ej$genefreq_obs))ej$genefreq_obs[[a_chr]] else 0.0)*2L*ni_rj,
+                       AA=if(a_chr %in% names(ej$H_ii))ej$H_ii[[a_chr]] else 0L,AA_corr=0.0))
+                cmp <- weir_components_allele(pd,use_corr=FALSE)
+                s1_r<-s1_r+cmp$s2P*nc_r; s3_r<-s3_r+(cmp$s2P+cmp$s2I+cmp$s2G)*nc_r
+              }
+              if (nc_c>0) {
+                pf_i<-if(a_chr %in% names(ei$pfreq))ei$pfreq[[a_chr]] else 0.0
+                pf_j<-if(a_chr %in% names(ej$pfreq))ej$pfreq[[a_chr]] else 0.0
+                AA_i<-if(a_chr %in% names(ei$H_ii))ei$H_ii[[a_chr]] else 0L
+                AA_j<-if(a_chr %in% names(ej$H_ii))ej$H_ii[[a_chr]] else 0L
+                di<-pf_i+2.0*ei$rd; dj<-pf_j+2.0*ej$rd
+                pdc <- list(
+                  list(ni=ni_ci,nA=pf_i*2L*ni_ci,AA=AA_i,AA_corr=if(AA_i>0&&di>0)AA_i*(pf_i/di) else 0.0),
+                  list(ni=ni_cj,nA=pf_j*2L*ni_cj,AA=AA_j,AA_corr=if(AA_j>0&&dj>0)AA_j*(pf_j/dj) else 0.0))
+                cmpc <- weir_components_allele(pdc,use_corr=TRUE)
+                s1_c<-s1_c+cmpc$s2P*nc_c; s3_c<-s3_c+(cmpc$s2P+cmpc$s2I+cmpc$s2G)*nc_c
+              }
+            }
+            rows_fst[[length(rows_fst)+1L]] <- data.frame(
+              Locus=loc, Pop1=pi_n, Pop2=pj_n,
+              FST_raw=round(if(s3_r!=0)s1_r/s3_r else NA_real_,6),
+              FST_ENA=round(if(s3_c!=0)s1_c/s3_c else NA_real_,6),
+              stringsAsFactors=FALSE)
+            d_raw_l <- if(ni_ri>0&&ni_rj>0&&length(ei$genefreq_obs)>0&&length(ej$genefreq_obs)>0)
+              cs_distance(ei$genefreq_obs,ej$genefreq_obs) else NA_real_
+            d_ina_l <- if(ni_ci>0&&ni_cj>0)
+              cs_distance(make_ina_freq(ei),make_ina_freq(ej)) else NA_real_
+            rows_dc[[length(rows_dc)+1L]] <- data.frame(
+              Locus=loc, Pop1=pi_n, Pop2=pj_n,
+              DCSE_raw=round(d_raw_l,6), DCSE_INA=round(d_ina_l,6),
+              stringsAsFactors=FALSE)
+          }
+        }
+      }
+      list(fst=do.call(rbind,rows_fst), dc=do.call(rbind,rows_dc))
+    }
+
+    file4_data <- reactive({
+      r <- results_r()
+      plp <- compute_per_locus_pair(r$em_res)
+      list(
+        header       = meta_header(r, "File 4 \u2014 Per-locus half-matrices (FST, FST-ENA, DCSE, DCSE-INA)"),
+        fst_df       = plp$fst,
+        dc_df        = plp$dc,
+        pops         = r$pops,
+        markers      = r$markers
+      )
+    })
+
+    half_matrix_txt <- function(df, stat_col, pops, loc) {
+      sub  <- df[df$Locus == loc,,drop=FALSE]
+      n    <- length(pops)
+      lines <- character(0)
+      lines <- c(lines, paste0("# Locus: ", loc, "  Statistic: ", stat_col))
+      hdr <- paste(c("", pops[-n]), collapse="\t")
+      lines <- c(lines, hdr)
+      for (i in seq(2, n)) {
+        row_vals <- sapply(seq_len(n), function(j) {
+          if (j >= i) return("")
+          row <- sub[sub$Pop1==pops[j] & sub$Pop2==pops[i],,drop=FALSE]
+          if (nrow(row)==0) return("NA")
+          v <- row[[stat_col]][1]
+          if (is.na(v)) "NA" else as.character(round(v,6))
+        })
+        lines <- c(lines, paste(c(pops[i], row_vals[-n]), collapse="\t"))
+      }
+      lines
+    }
+
+    output$dl_file4_txt <- downloadHandler(
+      filename = function() paste0("per_locus_half_matrices_", Sys.Date(), ".txt"),
+      content  = function(file) {
+        d <- file4_data()
+        writeLines(d$header, con=file)
+        for (loc in d$markers) {
+          for (sc in c("FST_raw","FST_ENA")) {
+            ln <- half_matrix_txt(d$fst_df, sc, d$pops, loc)
+            write(ln, file=file, append=TRUE); write("", file=file, append=TRUE)
+          }
+          for (sc in c("DCSE_raw","DCSE_INA")) {
+            ln <- half_matrix_txt(d$dc_df, sc, d$pops, loc)
+            write(ln, file=file, append=TRUE); write("", file=file, append=TRUE)
+          }
+        }
+      }
+    )
+    output$dl_file4_csv <- downloadHandler(
+      filename = function() paste0("per_locus_half_matrices_", Sys.Date(), ".csv"),
+      content  = function(file) {
+        d <- file4_data()
+        writeLines(d$header, con = file)
+        for (loc in d$markers) {
+          for (sc in c("FST_raw","FST_ENA")) {
+            ln <- half_matrix_txt(d$fst_df, sc, d$pops, loc)
+            write(ln, file = file, append = TRUE); write("", file = file, append = TRUE)
+          }
+          for (sc in c("DCSE_raw","DCSE_INA")) {
+            ln <- half_matrix_txt(d$dc_df, sc, d$pops, loc)
+            write(ln, file = file, append = TRUE); write("", file = file, append = TRUE)
+          }
+        }
+      }
+    )
+
+    # ── Download buttons UI ────────────────────────────────────────────────────
+    make_dl_ui <- function(csv_id, txt_id) {
+      ns_local <- session$ns
+      renderUI({
+        req(results_r())
+        tags$div(class="ibd-dl-row",
+          downloadButton(ns_local(csv_id), ".csv", class="btn btn-default btn-xs"),
+          downloadButton(ns_local(txt_id), ".txt", class="btn btn-default btn-xs"))
+      })
+    }
+    output$ui_dl_file1 <- make_dl_ui("dl_file1_csv", "dl_file1_txt")
+    output$ui_dl_file2 <- make_dl_ui("dl_file2_csv", "dl_file2_txt")
+    output$ui_dl_file3 <- make_dl_ui("dl_file3_csv", "dl_file3_txt")
+    output$ui_dl_file4 <- make_dl_ui("dl_file4_csv", "dl_file4_txt")
+
+    # ── Run status ─────────────────────────────────────────────────────────────
+    output$ui_run_status <- renderUI({
+      r <- tryCatch(results_r(), error = function(e) NULL)
+      if (is.null(r)) return(NULL)
+      ci_pct <- paste0(round((1-r$alpha)*100,3),"%")
+      tags$div(class="ibd-success", style="margin-top:.5rem;",
+        icon("check-circle"), " ",
+        tags$strong("Computation complete."),
+        sprintf(" %d loci \u00b7 %d populations \u00b7 %d replicates \u00b7 %s CI.",
+                length(r$markers), length(r$pops), r$nboot, ci_pct),
+        if (!is.null(r$geo_long))
+          sprintf(" %d populations with GPS \u2192 %d pairwise Dgeo computed.",
+                  nrow(attr(r$geo_mat, "dimnames")[[1]]),
+                  nrow(r$geo_long))
+        else " No GPS data available.",
+        " Output files are ready for download above."
+      )
+    })
+
+    # ── Value boxes ────────────────────────────────────────────────────────────
+    output$vb_loci <- renderUI({
+      tryCatch(tags$span(length(markers_r())), error=function(e) tags$span("\u2014"))
+    })
+    output$vb_pops <- renderUI({
+      tryCatch(tags$span(length(pops_r())), error=function(e) tags$span("\u2014"))
+    })
+    output$vb_n <- renderUI({
+      tryCatch({
+        db_ready(); con <- con_r(); ms <- meta_schema_r()
+        n <- DBI::dbGetQuery(con, sprintf(
+          "SELECT COUNT(DISTINCT CAST(%s AS VARCHAR)) AS n FROM %s WHERE %s IS NOT NULL",
+          sql_id(con,ms$ind_col),sql_id(con,tbl_meta_r()),sql_id(con,ms$ind_col)))$n[[1]]
+        tags$span(n)
+      }, error=function(e) tags$span("\u2014"))
+    })
+    output$vb_avg_null <- renderUI({
+      tryCatch({
+        r <- results_r()
+        v <- round(mean(r$t1$p_nulls, na.rm=TRUE), 4)
+        col <- if(v>.20)"#9d174d" else if(v>.10)"#854d0e" else "#166534"
+        tags$span(style=paste0("color:",col,";"), v)
+      }, error=function(e) tags$span("\u2014"))
+    })
+    output$vb_gps <- renderUI({
+      tryCatch({
+        coords <- gps_coords_r()
+        tags$span(nrow(coords))
+      }, error=function(e) tags$span("\u2014"))
+    })
+    output$vb_fst_ena <- renderUI({
+      tryCatch({
+        r <- results_r(); v <- round(r$fst_global$global_ena, 4)
+        col <- if(!is.na(v)&&v>.15)"#9d174d" else if(!is.na(v)&&v>.05)"#854d0e" else "#166534"
+        tags$span(style=paste0("color:",col,";"), if(is.na(v))"\u2014" else v)
+      }, error=function(e) tags$span("\u2014"))
+    })
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  TAB 1 \u2014 Pairwise long table (genetic + Dgeo + bootstrap CI)
+    # ══════════════════════════════════════════════════════════════════════════
+    pairwise_long_display_r <- reactive({
+      r <- results_r()
+      fst_l <- r$fst_pair$long
+      dc_l  <- r$dc_pair$long
+      bf    <- r$boot_pair_fst
+      bd    <- r$boot_pair_dc
+
+      merged <- merge(fst_l, dc_l, by=c("Pop1","Pop2"), all=TRUE)
+      if (!is.null(r$geo_long) && nrow(r$geo_long) > 0) {
+        merged <- merge(merged, r$geo_long, by = c("Pop1", "Pop2"), all.x = TRUE)
+      } else {
+        merged$Dgeo   <- NA_real_
+        merged$lnDgeo <- NA_real_
+      }
+      if (!is.null(bf) && nrow(bf) > 0) {
+        bf_sub <- bf[, c("Pop1","Pop2","FST_ENA_obs","CI_lo_ENA","CI_hi_ENA",
+                         "FST_raw_obs","CI_lo_raw","CI_hi_raw")]
+        merged <- merge(merged, bf_sub, by = c("Pop1","Pop2"), all.x = TRUE)
+      }
+      if (!is.null(bd) && nrow(bd) > 0) {
+        bd_sub <- bd[, c("Pop1","Pop2","DCSE_INA_obs","CI_lo_INA","CI_hi_INA",
+                         "DCSE_raw_obs","CI_lo_raw","CI_hi_raw")]
+        names(bd_sub) <- c("Pop1","Pop2",
+                           "DCSE_INA_obs","DCSE_CI_lo","DCSE_CI_hi",
+                           "DCSE_raw_obs","DCSE_raw_CI_lo","DCSE_raw_CI_hi")
+        merged <- merge(merged, bd_sub, by = c("Pop1","Pop2"), all.x = TRUE)
+      }
+      merged
+    })
+
+    output$dt_pairwise_long <- DT::renderDT({
+      d <- pairwise_long_display_r()
+      shiny::validate(shiny::need(nrow(d)>0, "No data yet. Click Compute."))
+      DT::datatable(d, rownames=FALSE,
+        options=list(pageLength=25, scrollX=TRUE, dom="lftip"),
+        class="compact hover stripe") |>
+        DT::formatRound(columns = c("Dgeo","lnDgeo",
+                                     "FST_raw","FST_ENA","Delta_FST",
+                                     "FST_raw_obs","CI_lo_raw","CI_hi_raw",
+                                     "FST_ENA_obs","CI_lo_ENA","CI_hi_ENA",
+                                     "DCSE_raw","DCSE_INA","Delta_DCSE",
+                                     "DCSE_raw_obs","DCSE_raw_CI_lo","DCSE_raw_CI_hi",
+                                     "DCSE_INA_obs","DCSE_CI_lo","DCSE_CI_hi"),
+                         digits = 4) |>
+        DT::formatStyle("Pop1", fontWeight="600", color="#0f172a") |>
+        DT::formatStyle("Pop2", fontWeight="600", color="#0f172a")
+    }, server=TRUE)
+
+    # ── Geographic long table ──────────────────────────────────────────────────
+    output$dt_geo_long <- DT::renderDT({
+      r <- results_r()
+      shiny::validate(shiny::need(!is.null(r$geo_long) && nrow(r$geo_long)>0,
+        "No GPS data available."))
+      DT::datatable(r$geo_long, rownames=FALSE,
+        options=list(pageLength=25, scrollX=TRUE, dom="lftip"),
+        class="compact hover stripe",
+        colnames = c("Population 1","Population 2","Dgeo (km)","ln(Dgeo)")) |>
+        DT::formatRound(c("Dgeo","lnDgeo"), digits = 4)
+    }, server=TRUE)
+
+    # ── Genetic matrix display ─────────────────────────────────────────────────
+    render_mat_html <- function(mat, fmt=4,
+                                thr =c(0.05,0.15,0.25),
+                                clrs=c("#f0fdf4","#dcfce7","#fefce8","#fef2f2")) {
+      pops <- rownames(mat); n <- length(pops)
+      cell <- function(i,j) {
+        if (i==j) return('<td class="diag">\u2014</td>')
+        if (i<j)  return('<td class="upper">\u00b7</td>')
+        v <- mat[i,j]; if (is.na(v)) return('<td style="color:#94a3b8;">NA</td>')
+        bg <- clrs[findInterval(v,thr)+1L]
+        sprintf('<td style="background:%s;">%s</td>',bg,round(v,fmt))
+      }
+      thead <- paste0('<tr><th></th>',paste(sprintf('<th>%s</th>',pops[-n]),collapse=""),'</tr>')
+      tbody <- paste(sapply(seq_len(n),function(i){
+        if(i==1L) return("")
+        paste0('<tr><td class="lbl">',pops[i],'</td>',
+               paste(sapply(seq_len(n),function(j)cell(i,j)),collapse=""),'</tr>')
+      }),collapse="")
+      HTML(sprintf('<div class="ibd-matrix-wrap"><table class="ibd-matrix"><thead>%s</thead><tbody>%s</tbody></table></div>',
+                   thead,tbody))
+    }
+
+    output$ui_gen_matrix <- renderUI({
+      r <- tryCatch(results_r(), error=function(e) NULL)
+      if (is.null(r))
+        return(tags$p("Run computation first.", style="color:#94a3b8;"))
+      typ <- input$gen_mat_display %||% "ena"
+      mat <- switch(typ,
+        "ena"    = r$fst_pair$matrix_ena,
+        "raw"    = r$fst_pair$matrix_raw,
+        "ina"    = r$dc_pair$matrix_ina,
+        "dc_raw" = r$dc_pair$matrix_raw)
+      if (is.null(mat)) return(tags$p("Matrix not available.", style="color:#94a3b8;"))
+      thr <- if (typ %in% c("ena","raw")) c(0.05,0.15,0.25) else c(0.1,0.25,0.4)
+      clrs <- if (typ %in% c("ena","raw"))
+        c("#f0fdf4","#dcfce7","#fefce8","#fef2f2")
+      else
+        c("#eff6ff","#dbeafe","#fef9c3","#fef2f2")
+      render_mat_html(mat, thr=thr, clrs=clrs)
+    })
+
+    # ── Geographic matrix display ──────────────────────────────────────────────
+    output$ui_geo_matrix <- renderUI({
+      r <- tryCatch(results_r(), error=function(e) NULL)
+      if (is.null(r) || is.null(r$geo_mat))
+        return(tags$p("No GPS data available.", style="color:#94a3b8;"))
+      render_mat_html(r$geo_mat, fmt=2,
+                      thr = c(10, 50, 200),
+                      clrs = c("#eff6ff","#dbeafe","#fef9c3","#fef2f2"))
+    })
+
+    # ── Bootstrap pairwise CI display ──────────────────────────────────────────
+    boot_tbl_html <- function(d, cols, col_labels, char_cols = c("Pop1","Pop2")) {
+      rows_html <- sapply(seq_len(nrow(d)), function(i) {
+        cells <- paste(sapply(cols, function(cn) {
+          val <- d[[cn]][i]
+          if (cn %in% char_cols)
+            sprintf('<td class="lbl">%s</td>', htmltools::htmlEscape(as.character(val)))
+          else {
+            num <- suppressWarnings(as.numeric(val))
+            sprintf('<td>%s</td>', if(is.na(num)) "NA" else formatC(num,digits=6,format="f"))
+          }
+        }), collapse="")
+        paste0("<tr>",cells,"</tr>")
+      })
+      HTML(paste0(
+        '<table class="ibd-matrix" style="width:100%"><thead><tr>',
+        paste(sprintf("<th>%s</th>",col_labels),collapse=""),
+        '</tr></thead><tbody>',paste(rows_html,collapse=""),'</tbody></table>'))
+    }
+
+    output$ui_boot_pairwise <- renderUI({
+      r <- tryCatch(results_r(), error=function(e) NULL)
+      if (is.null(r))
+        return(tags$p("Run computation first.", style="color:#94a3b8;"))
+      ci_pct <- paste0(round((1-r$alpha)*100,3),"%")
+      bf <- r$boot_pair_fst
+      bd <- r$boot_pair_dc
+
+      # Merge FST and DCSE bootstrap
+      merged <- merge(bf, bd, by = c("Pop1","Pop2"))
+      # Add Dgeo
+      if (!is.null(r$geo_long) && nrow(r$geo_long) > 0) {
+        merged <- merge(merged, r$geo_long[, c("Pop1","Pop2","Dgeo")],
+                        by = c("Pop1","Pop2"), all.x = TRUE)
+      } else {
+        merged$Dgeo <- NA_real_
+      }
+      # Reorder: Pop1, Pop2, Dgeo, then FST/DCSE
+      cols_order <- c("Pop1","Pop2","Dgeo",
+                      "FST_raw_obs","CI_lo_raw","CI_hi_raw",
+                      "FST_ENA_obs","CI_lo_ENA","CI_hi_ENA",
+                      "DCSE_raw_obs","DCSE_raw_CI_lo","DCSE_raw_CI_hi",
+                      "DCSE_INA_obs","DCSE_CI_lo","DCSE_CI_hi")
+      # Rename DCSE CI columns to match
+      names(merged)[names(merged) == "CI_lo_raw.1"] <- "DCSE_raw_CI_lo"
+      names(merged)[names(merged) == "CI_hi_raw.1"] <- "DCSE_raw_CI_hi"
+      cols_order <- cols_order[cols_order %in% names(merged)]
+      merged <- merged[, cols_order, drop = FALSE]
+
+      tags$div(class="ibd-mantel-result",
+        tags$p(tags$strong(sprintf("Pairwise statistics \u2014 %s CI (bootstrap over loci)", ci_pct))),
+        tags$div(class="ibd-matrix-wrap",
+          boot_tbl_html(merged,
+            c("Pop1","Pop2","Dgeo",
+              "FST_raw_obs","CI_lo_raw","CI_hi_raw",
+              "FST_ENA_obs","CI_lo_ENA","CI_hi_ENA",
+              "DCSE_raw_obs","DCSE_raw_CI_lo","DCSE_raw_CI_hi",
+              "DCSE_INA_obs","DCSE_CI_lo","DCSE_CI_hi"),
+            c("Pop 1","Pop 2","Dgeo (km)",
+              "Raw FST","CI lo","CI hi",
+              "FST-ENA","CI lo","CI hi",
+              "Raw DCSE","CI lo","CI hi",
+              "DCSE-INA","CI lo","CI hi")))
+      )
+    })
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  TAB 2 \u2014 Mantel Test
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # Reactive: matrix 1 (genetic)
+    mat1_r <- reactive({
+      src <- input$mat1_source
+      if (src %in% c("tab1_fst_ena","tab1_fst_raw","tab1_dc_ina","tab1_dc_raw")) {
+        r <- shiny::req(results_r())
+        mat <- switch(src,
+          "tab1_fst_ena" = r$fst_pair$matrix_ena,
+          "tab1_fst_raw" = r$fst_pair$matrix_raw,
+          "tab1_dc_ina"  = r$dc_pair$matrix_ina,
+          "tab1_dc_raw"  = r$dc_pair$matrix_raw)
+        shiny::validate(shiny::need(!is.null(mat),
+          "Selected matrix not available. Run pairwise computation first."))
+        return(mat)
+      }
+      # Upload
+      shiny::req(input$file_mat1)
+      parse_dist_file(input$file_mat1$datapath, input$mat1_format)
+    })
+
+    # Reactive: matrix 2 (geographic)
+    mat2_r <- reactive({
+      src <- input$mat2_source
+      if (src %in% c("gps_km","gps_ln")) {
+        r <- shiny::req(results_r())
+        shiny::validate(shiny::need(!is.null(r$geo_mat),
+          "No GPS data available. Please import data with Latitude/Longitude columns."))
+        mat <- r$geo_mat
+        if (src == "gps_ln") {
+          mat[mat > 0] <- log(mat[mat > 0])
+          diag(mat) <- 0
+        }
+        return(mat)
+      }
+      # Upload
+      shiny::req(input$file_mat2)
+      parse_dist_file(input$file_mat2$datapath, input$mat2_format)
+    })
+
+    # Run Mantel test
+    mantel_results_r <- eventReactive(input$run_mantel, {
+      m1 <- mat1_r()
+      m2 <- mat2_r()
+
+      # Align populations
+      p1 <- rownames(m1); p2 <- rownames(m2)
+      common <- intersect(p1, p2)
+      shiny::validate(shiny::need(
+        length(common) >= 3L,
+        sprintf("Need at least 3 populations present in BOTH matrices. Found: %d common populations.",
+                length(common))))
+
+      m1 <- m1[common, common, drop = FALSE]
+      m2 <- m2[common, common, drop = FALSE]
+
+      n_perm <- as.integer(input$n_perm_mantel %||% 9999L)
+      method <- input$mantel_method %||% "pearson"
+
+      withProgress(message = "Running Mantel test...", value = 0.5, {
+        res <- mantel_test(m1, m2, n_perm = n_perm, method = method)
+        incProgress(0.5, detail = "Done")
+      })
+
+      res$mat1 <- m1
+      res$mat2 <- m2
+      res$method <- method
+      res$n_perm <- n_perm
+      res$pops <- common
+      res
+    })
+
+    # Mantel value boxes
+    output$vb_mantel_r <- renderUI({
+      tryCatch({
+        r <- mantel_results_r()
+        v <- round(r$r, 4)
+        col <- if (!is.na(v) && v > 0.5) "#9d174d"
+               else if (!is.na(v) && v > 0.2) "#854d0e"
+               else "#166534"
+        tags$span(style=paste0("color:",col,";"), if(is.na(v)) "\u2014" else v)
+      }, error=function(e) tags$span("\u2014"))
+    })
+    output$vb_mantel_p <- renderUI({
+      tryCatch({
+        r <- mantel_results_r()
+        v <- r$p_value
+        sig <- if (!is.na(v) && v < 0.001) "***"
+               else if (!is.na(v) && v < 0.01) "**"
+               else if (!is.na(v) && v < 0.05) "*"
+               else "ns"
+        col <- if (!is.na(v) && v < 0.05) "#166534" else "#9d174d"
+        tags$span(style=paste0("color:",col,";"),
+                  if(is.na(v)) "\u2014" else sprintf("%.4f %s", v, sig))
+      }, error=function(e) tags$span("\u2014"))
+    })
+    output$vb_mantel_n <- renderUI({
+      tryCatch(tags$span(mantel_results_r()$n), error=function(e) tags$span("\u2014"))
+    })
+    output$vb_mantel_pops <- renderUI({
+      tryCatch(tags$span(length(mantel_results_r()$pops)), error=function(e) tags$span("\u2014"))
+    })
+
+    # Mantel result text
+    output$ui_mantel_result <- renderUI({
+      r <- tryCatch(mantel_results_r(), error=function(e) NULL)
+      if (is.null(r))
+        return(tags$p("Configure matrices and click 'Run Mantel Test'.",
+                      style="color:#94a3b8;"))
+      sig <- if (r$p_value < 0.001) "Highly significant (p < 0.001) ***"
+             else if (r$p_value < 0.01) "Very significant (p < 0.01) **"
+             else if (r$p_value < 0.05) "Significant (p < 0.05) *"
+             else "Not significant (p \u2265 0.05)"
+      tags$div(class="ibd-mantel-result",
+        tags$strong("Mantel Test Summary"),
+        tags$br(),
+        sprintf("Method:          %s", r$method),
+        tags$br(),
+        sprintf("Permutations:    %d", r$n_perm),
+        tags$br(),
+        sprintf("Pairs (n):       %d", r$n),
+        tags$br(),
+        sprintf("Populations:     %d", length(r$pops)),
+        tags$br(), tags$br(),
+        sprintf("Mantel r:        %.6f", r$r),
+        tags$br(),
+        sprintf("P-value:         %.6f", r$p_value),
+        tags$br(), tags$br(),
+        tags$strong(sprintf("Result: %s", sig))
+      )
+    })
+
+    # Download Mantel results
+    output$dl_mantel_csv <- downloadHandler(
+      filename = function() paste0("mantel_test_", Sys.Date(), ".csv"),
+      content = function(file) {
+        r <- mantel_results_r()
+        hdr <- c(
+          "# Mantel Test Results",
+          paste0("# Method: ", r$method),
+          paste0("# Permutations: ", r$n_perm),
+          paste0("# Pairs (n): ", r$n),
+          paste0("# Populations: ", length(r$pops)),
+          paste0("# Mantel r: ", r$r),
+          paste0("# P-value: ", r$p_value),
+          "#"
+        )
+        writeLines(hdr, con = file)
+        df <- data.frame(Distance1 = r$v1, Distance2 = r$v2)
+        write.table(df, file = file, sep = ",", row.names = FALSE,
+                    quote = FALSE, append = TRUE, col.names = TRUE)
+      }
+    )
+
+    # Mantel scatter plot
+    output$mantel_plot <- plotly::renderPlotly({
+      r <- tryCatch(mantel_results_r(), error=function(e) NULL)
+      if (is.null(r) || length(r$v1) < 3L) {
+        return(plotly::plot_ly() |>
+          plotly::layout(title = "Run Mantel test to see the scatter plot",
+                         xaxis = list(title = ""),
+                         yaxis = list(title = "")))
+      }
+
+      df <- data.frame(x = r$v1, y = r$v2)
+      fit <- lm(y ~ x, data = df)
+
+      plotly::plot_ly() |>
         plotly::add_markers(
-          data = data.frame(x = xv, y = pw$FR,
-                             pop_i = pw$pop_i, pop_j = pw$pop_j,
-                             dist  = round(pw$dist_km, 2),
-                             fst   = round(pw$fst, 5),
-                             fr    = round(pw$FR, 5)),
-          x = ~x, y = ~y,
-          text = ~paste0(pop_i, " \u2013 ", pop_j,
-                         "<br>Dist: ", dist, " km",
-                         "<br>F\u209b\u209c(FreeNA): ", fst,
-                         "<br>F\u209b\u209c/(1\u2212F\u209b\u209c): ", fr),
-          hoverinfo = "text",
+          data = df, x = ~x, y = ~y,
           marker = list(color = "#2CBF9F", size = 7, opacity = 0.85),
-          name = "Pairs"
-        ) %>%
-
-        # Regression line: Average
-        { if (!is.null(line_avg))
-            plotly::add_lines(., data = line_avg, x = ~x, y = ~y,
-              line = list(color = "#333a43", width = 2, dash = "solid"),
-              name = paste0("Average  b=", formatC(r$reg_avg$b, format="f", digits=4)))
-          else . } %>%
-
-        # Regression line: Upper CI (ls)
-        { if (!is.null(line_ls))
-            plotly::add_lines(., data = line_ls, x = ~x, y = ~y,
-              line = list(color = "#B40F20", width = 1.5, dash = "dash"),
-              name = paste0("Upper CI (ls)  b=", formatC(r$reg_ls$b, format="f", digits=4)))
-          else . } %>%
-
-        # Regression line: Lower CI (li)
-        { if (!is.null(line_li))
-            plotly::add_lines(., data = line_li, x = ~x, y = ~y,
-              line = list(color = "#3B9AB2", width = 1.5, dash = "dot"),
-              name = paste0("Lower CI (li)  b=", formatC(r$reg_li$b, format="f", digits=4)))
-          else . } %>%
-
+          name = "Pairs",
+          hoverinfo = "text",
+          text = ~paste0("Matrix 1: ", round(x, 4),
+                        "<br>Matrix 2: ", round(y, 4))
+        ) |>
+        plotly::add_lines(
+          data = data.frame(x = df$x, y = fitted(fit)),
+          x = ~x, y = ~y,
+          line = list(color = "#B40F20", width = 2),
+          name = sprintf("Regression (r = %.3f)", r$r)
+        ) |>
         plotly::layout(
-          xaxis  = list(title = x_label),
-          yaxis  = list(title = "F\u209b\u209c / (1 \u2212 F\u209b\u209c)"),
-          title  = list(
-            text = paste0("IBD (Rousset 1997) \u2014 Mantel r = ",
-                          round(r$mantel$r, 4),
-                          ", p = ",
-                          formatC(r$mantel$p_value, format = "f", digits = 4)),
-            font = list(size = 13)),
-          legend = list(x = 0.02, y = 0.98, bgcolor = "rgba(255,255,255,0.8)",
-                        bordercolor = "#ddd", borderwidth = 1),
-          font   = list(family = "Helvetica Neue, Segoe UI, Arial"),
-          margin = list(t = 55)
+          title = list(
+            text = sprintf("Mantel r = %.4f, p = %.4f (%s)",
+                           r$r, r$p_value, r$method),
+            font = list(size = 14)),
+          xaxis = list(title = "Matrix 1 distance"),
+          yaxis = list(title = "Matrix 2 distance"),
+          legend = list(x = 0.02, y = 0.98, bgcolor = "rgba(255,255,255,0.8)")
         )
     })
 
-    # ── Pairwise FST + linearised values table ─────────────────────────────
-    output$fst_table <- DT::renderDT({
-      r  <- results_r()
-      pw <- r$pw
-      df <- data.frame(
-        Pop1       = pw$pop_i,
-        Pop2       = pw$pop_j,
-        Dist_km    = round(pw$dist_km, 2),
-        FST_FreeNA = round(pw$fst,  5),
-        CI_lower   = round(pw$ci_l, 5),
-        CI_upper   = round(pw$ci_u, 5),
-        FR         = round(pw$FR,   5),
-        FR_lower   = round(pw$FR_i, 5),
-        FR_upper   = round(pw$FR_s, 5),
-        stringsAsFactors = FALSE
-      )
-      DT::datatable(df, rownames = FALSE,
-        options = list(scrollX = TRUE, pageLength = 15,
-                       dom = "lrtip"),
-        class   = "compact stripe hover",
-        colnames = c("Pop 1", "Pop 2", "Dist (km)",
-                     "FST_FreeNA", "CI lower", "CI upper",
-                     "FR", "FR lower", "FR upper")
-      ) %>%
-        DT::formatStyle("FST_FreeNA",
-          backgroundColor = DT::styleInterval(
-            c(0.05, 0.15, 0.25),
-            c("#d4edda", "#fff3cd", "#f8d7da", "#c3002f22")))
-    })
-
-    # ── Pairwise distance matrix ───────────────────────────────────────────
-    output$dist_table <- DT::renderDT({
-      r  <- results_r()
-      df <- as.data.frame(round(r$dist_mat, 2))
-      df <- cbind(Population = rownames(df), df)
-      DT::datatable(df, rownames = FALSE,
-        options = list(scrollX = TRUE, pageLength = 15, dom = "t"),
-        class   = "compact stripe hover")
-    })
-
-    # ── Downloads ──────────────────────────────────────────────────────────
-    output$dl_fst <- downloadHandler(
-      filename = function() paste0("IBD_pairwise_FST_", Sys.Date(), ".csv"),
-      content  = function(file) {
-        r  <- results_r()
-        pw <- r$pw
-        df <- data.frame(
-          Pop1 = pw$pop_i, Pop2 = pw$pop_j,
-          Dist_km = round(pw$dist_km, 4),
-          FST_FreeNA = round(pw$fst, 6), CI_lower = round(pw$ci_l, 6),
-          CI_upper = round(pw$ci_u, 6),
-          FR = round(pw$FR, 6), FR_lower = round(pw$FR_i, 6),
-          FR_upper = round(pw$FR_s, 6),
-          stringsAsFactors = FALSE)
-        write.csv(df, file, row.names = FALSE)
-      }
-    )
-    output$dl_dist <- downloadHandler(
-      filename = function() paste0("IBD_distances_km_", Sys.Date(), ".csv"),
-      content  = function(file) {
-        r  <- results_r()
-        df <- as.data.frame(round(r$dist_mat, 4))
-        df <- cbind(Population = rownames(df), df)
-        write.csv(df, file, row.names = FALSE)
-      }
-    )
-  })
+  }) # end moduleServer
 }
