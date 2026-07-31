@@ -1,5 +1,3 @@
-
-
 server_import_data <- function(id, rv) {
   
   shiny::moduleServer(id, function(input, output, session) {

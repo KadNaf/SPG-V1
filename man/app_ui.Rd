@@ -7,7 +7,7 @@
 app_ui()
 }
 \value{
-A \code{bslib::page_navbar} object.
+A \code{shinydashboard::dashboardPage} object.
 }
 \description{
 Application UI

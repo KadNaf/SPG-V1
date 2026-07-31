@@ -1,5 +1,5 @@
 // ============================================================================
-// fst_permute_bootstrap_OpenMP.cpp
+// fst_permute_boostrap_OpenMP.cpp
 // R-free OpenMP kernels + thin Rcpp wrappers.
 // ============================================================================
 
@@ -70,17 +70,15 @@ static inline void mat_set_colmajor(int* ptr, int ld, int i, int j, int v) {
 // NA helpers
 // ============================================================================
 static inline bool is_na_double(double v) {
-  return std::isnan(v);
+  return std::isnan(v); // NA_REAL is NaN payload
 }
 
 static inline double mean_across_loci_ptr(const double* x, int L) {
-  double s = 0.0; 
-  int k = 0;
+  double s = 0.0; int k = 0;
   for (int i = 0; i < L; ++i) {
     const double v = x[i];
     if (is_na_double(v)) continue;
-    s += v; 
-    k++;
+    s += v; k++;
   }
   return (k > 0) ? (s / (double)k) : NA_REAL;
 }
@@ -93,10 +91,7 @@ static std::vector<std::vector<int>> build_pop_rows(const IntegerMatrix& mat, in
   std::unordered_map<int, std::vector<int>> pop_map;
   pop_map.reserve(64);
   
-  for (int i = 0; i < n; ++i) {
-    int pop = mat(i, pop_col);
-    pop_map[pop].push_back(i);
-  }
+  for (int i = 0; i < n; ++i) pop_map[ mat(i, pop_col) ].push_back(i);
   
   std::vector<std::vector<int>> rows;
   rows.reserve(pop_map.size());
@@ -110,16 +105,11 @@ static std::vector<std::vector<int>> build_pop_rows(const IntegerMatrix& mat, in
 static inline void permute_pop_labels_once_rng_buf(
     int* dat_ptr, int n, int p, int pop_col, std::mt19937_64& rng) {
   
-  (void)p; // unused parameter
-  
+  (void)p;
   std::vector<int> labels((size_t)n);
-  for (int i = 0; i < n; ++i) {
-    labels[i] = mat_get_colmajor(dat_ptr, n, i, pop_col);
-  }
+  for (int i = 0; i < n; ++i) labels[i] = mat_get_colmajor(dat_ptr, n, i, pop_col);
   std::shuffle(labels.begin(), labels.end(), rng);
-  for (int i = 0; i < n; ++i) {
-    mat_set_colmajor(dat_ptr, n, i, pop_col, labels[i]);
-  }
+  for (int i = 0; i < n; ++i) mat_set_colmajor(dat_ptr, n, i, pop_col, labels[i]);
 }
 
 static inline void permute_within_pops_once_rng_buf(
@@ -172,7 +162,7 @@ static inline WC84LocusStats wc84_locus_stats_ptr_ld(
     const int* dat_ptr, int n_used, int ld, int p,
     int locus_col, int pop_col, int missing_code, int base
 ) {
-  (void)p; // unused parameter
+  (void)p;
   
   std::unordered_map<int,int> pop_to_idx;
   pop_to_idx.reserve(64);
@@ -213,12 +203,9 @@ static inline WC84LocusStats wc84_locus_stats_ptr_ld(
     n_i[pi] += 1;
     total_n += 1;
     
-    acount[pi][a1] += 1; 
-    acount[pi][a2] += 1;
-    pooled_acount[a1] += 1; 
-    pooled_acount[a2] += 1;
-    all_alleles[a1] = 1; 
-    all_alleles[a2] = 1;
+    acount[pi][a1] += 1; acount[pi][a2] += 1;
+    pooled_acount[a1] += 1; pooled_acount[a2] += 1;
+    all_alleles[a1] = 1; all_alleles[a2] = 1;
     
     if (a1 != a2) {
       total_het += 1;
@@ -231,10 +218,7 @@ static inline WC84LocusStats wc84_locus_stats_ptr_ld(
   if (r < 2) return {NA_REAL, NA_REAL, NA_REAL, NA_REAL, NA_REAL, NA_REAL, false};
   
   double n_total = 0.0, sum_n2 = 0.0;
-  for (int i = 0; i < r; ++i) { 
-    n_total += n_i[i]; 
-    sum_n2 += (double)n_i[i] * (double)n_i[i]; 
-  }
+  for (int i = 0; i < r; ++i) { n_total += n_i[i]; sum_n2 += (double)n_i[i] * (double)n_i[i]; }
   if (n_total <= 1.0) return {NA_REAL, NA_REAL, NA_REAL, NA_REAL, NA_REAL, NA_REAL, false};
   
   const double n_bar = n_total / (double)r;
@@ -284,9 +268,7 @@ static inline WC84LocusStats wc84_locus_stats_ptr_ld(
     
     const double c = 0.5 * hbar;
     
-    a_sum += a; 
-    b_sum += b; 
-    c_sum += c;
+    a_sum += a; b_sum += b; c_sum += c;
   }
   
   const double denom = a_sum + b_sum + c_sum;
@@ -294,10 +276,12 @@ static inline WC84LocusStats wc84_locus_stats_ptr_ld(
   
   const double Ho = (total_n > 0) ? ((double)total_het / (double)total_n) : NA_REAL;
   
+  // Nei HS: unweighted mean of per-population unbiased gene diversities.
+  // Each population contributes equally regardless of sample size.
   double Hs_num = 0.0, Hs_den = 0.0;
   for (int pi = 0; pi < r; ++pi) {
     const int ni = n_i[pi];
-    if (ni <= 1) continue;
+    if (ni <= 1) continue;  // need n > 1 for unbiased estimate
     const double denom2 = 2.0 * (double)ni;
     double sum_p2 = 0.0;
     for (auto &kv2 : acount[pi]) {
@@ -305,18 +289,21 @@ static inline WC84LocusStats wc84_locus_stats_ptr_ld(
       sum_p2 += pk * pk;
     }
     double Hpop = 1.0 - sum_p2;
-    Hpop *= (denom2 / (denom2 - 1.0));
-    Hs_num += Hpop;
+    Hpop *= (denom2 / (denom2 - 1.0));  // unbiased correction
+    Hs_num += Hpop;  // equal weight per population (NOT n_i-weighted)
     Hs_den += 1.0;
   }
   const double Hs = (Hs_den > 0.0) ? (Hs_num / Hs_den) : NA_REAL;
   
+  // Nei HT: based on arithmetic mean of per-population allele frequencies.
+  // Each population contributes equally regardless of sample size.
   double Ht = NA_REAL;
   {
     int r_active = 0;
     for (int pi = 0; pi < r; ++pi) if (n_i[pi] > 0) ++r_active;
     
     if (r_active > 0 && total_n > 0) {
+      // arithmetic mean allele frequency: p̄_a = (1/r) * Σ_i p_{i,a}
       std::unordered_map<int,double> pbar;
       pbar.reserve(128);
       for (int pi = 0; pi < r; ++pi) {
@@ -332,6 +319,7 @@ static inline WC84LocusStats wc84_locus_stats_ptr_ld(
         sum_p2 += p * p;
       }
       Ht = 1.0 - sum_p2;
+      // unbiased correction using total n across all individuals
       const double denom_tot = 2.0 * (double)total_n;
       if (denom_tot > 1.0) Ht *= (denom_tot / (denom_tot - 1.0));
     }
@@ -389,6 +377,9 @@ static inline double fst_overall_ratio_of_sums_ptr_ld(
 
 // ============================================================================
 // G statistic (log-likelihood ratio) for differentiation — FSTAT's test stat
+// G = 2 * Σ_pop Σ_allele O_{j,a} * ln(O_{j,a} / E_{j,a})
+// where E_{j,a} = 2*n_j * (total_a / 2*N)  (expected under panmixia)
+// Returns sum of G across all loci (the global test statistic).
 // ============================================================================
 static inline double g_stat_differentiation_locus_ptr_ld(
     const int* dat_ptr, int n_used, int ld, int p,
@@ -459,41 +450,14 @@ static inline double g_stat_all_loci_ptr_ld(
     if (j == pop_col) continue;
     const double g = g_stat_differentiation_locus_ptr_ld(
       dat_ptr, n_used, ld, p, j, pop_col, missing_code, base);
-    if (std::isfinite(g)) { 
-      G_total += g; 
-      any_ok = true; 
-    }
+    if (std::isfinite(g)) { G_total += g; any_ok = true; }
   }
   return any_ok ? G_total : NA_REAL;
 }
 
-// ============================================================================
-// Helper: locus names from column names
-// ============================================================================
-static inline void locus_names_from_colnames(const IntegerMatrix& dat, int pop_col, CharacterVector& out) {
-  const int p = dat.ncol();
-  const int L = p - 1;
-  CharacterVector cn = colnames(dat);
-  
-  out = CharacterVector(L);
-  int k = 0;
-  const bool has = (cn.size() == p);
-  
-  for (int j = 0; j < p; ++j) {
-    if (j == pop_col) continue;
-    
-    if (has && cn[j] != NA_STRING) {
-      out[k] = cn[j];
-    } else {
-      out[k] = Rcpp::String(std::string("L") + std::to_string(k + 1));
-    }
-    ++k;
-  }
-}
 
-// ============================================================================
-// Export: nei_het_stats_cpp (unchanged, kept for compatibility)
-// ============================================================================
+static inline void locus_names_from_colnames(const IntegerMatrix& dat, int pop_col, CharacterVector& out);
+
 // [[Rcpp::export]]
 Rcpp::List nei_het_stats_cpp(const Rcpp::IntegerMatrix& dat,
                              int pop_col_1based = 1,
@@ -522,6 +486,7 @@ Rcpp::List nei_het_stats_cpp(const Rcpp::IntegerMatrix& dat,
   Rcpp::IntegerVector k_eff(L);
   std::fill(k_eff.begin(), k_eff.end(), NA_INTEGER);
   
+  // map pop label -> index
   std::unordered_map<int,int> pop_to_idx;
   pop_to_idx.reserve(64);
   
@@ -538,6 +503,7 @@ Rcpp::List nei_het_stats_cpp(const Rcpp::IntegerMatrix& dat,
     return idx;
   };
   
+  // pre-scan populations
   for (int i = 0; i < N; ++i) {
     int pop = dat(i, pop_col);
     get_pop_index(pop);
@@ -551,6 +517,7 @@ Rcpp::List nei_het_stats_cpp(const Rcpp::IntegerMatrix& dat,
   int out_col = 0;
   
   for (int j = 0; j < p; ++j) {
+    
     if (j == pop_col) continue;
     
     std::vector< std::unordered_map<int,int> > acount(r);
@@ -564,6 +531,7 @@ Rcpp::List nei_het_stats_cpp(const Rcpp::IntegerMatrix& dat,
     int total_het = 0;
     
     for (int i = 0; i < N; ++i) {
+      
       int a1, a2;
       int gt = dat(i, j);
       
@@ -600,32 +568,40 @@ Rcpp::List nei_het_stats_cpp(const Rcpp::IntegerMatrix& dat,
     
     k_eff[out_col] = k_locus;
     
+    // Ho = mean heterozygosity across populations
     double Ho_sum = 0.0;
     double Ho_den = 0.0;
     
     for (int pi = 0; pi < r; ++pi) {
       if (n_i[pi] <= 0) continue;
+      
       Ho_sum += (double)het_i[pi] / (double)n_i[pi];
       Ho_den += 1.0;
     }
     
     Ho[out_col] = (Ho_den > 0.0) ? (Ho_sum / Ho_den) : NA_REAL;
     
+    // Hs
     double Hs_num = 0.0;
     double Hs_den = 0.0;
     
     for (int pi = 0; pi < r; ++pi) {
+      
       if (n_i[pi] <= 1) continue;
       
       const double denom = 2.0 * (double)n_i[pi];
+      
       double sum_p2 = 0.0;
       
       for (auto &kv : acount[pi]) {
+        
         const double pk = (double)kv.second / denom;
         sum_p2 += pk * pk;
       }
       
       double Hpop = 1.0 - sum_p2;
+      
+      // unbiased correction
       Hpop *= (denom / (denom - 1.0));
       
       Hs_num += Hpop;
@@ -635,45 +611,77 @@ Rcpp::List nei_het_stats_cpp(const Rcpp::IntegerMatrix& dat,
     if (Hs_den > 0.0)
       Hs[out_col] = Hs_num / Hs_den;
     
-    {
-      int k_eff_local = 0;
-      for (int pi = 0; pi < r; ++pi)
-        if (n_i[pi] > 0) k_eff_local++;
+    // Ht
+      {
+        int k_eff = 0;
         
-      if (k_eff_local <= 0) {
-        Ht[out_col] = NA_REAL;
-      } else {
-        std::unordered_map<int,double> p_sum;
-        p_sum.reserve(256);
-        
-        for (int pi = 0; pi < r; ++pi) {
-          if (n_i[pi] <= 0) continue;
-          const double denom_pi = 2.0 * (double)n_i[pi];
-          for (auto &kv : acount[pi]) {
-            const int allele = kv.first;
-            const double p_aj = (double)kv.second / denom_pi;
-            p_sum[allele] += p_aj;
+        for (int pi = 0; pi < r; ++pi)
+          if (n_i[pi] > 0) k_eff++;
+          
+          if (k_eff <= 0) {
+            
+            Ht[out_col] = NA_REAL;
+            
+          } else {
+            
+            std::unordered_map<int,double> p_sum;
+            p_sum.reserve(256);
+            
+            for (int pi = 0; pi < r; ++pi) {
+              
+              if (n_i[pi] <= 0) continue;
+              
+              const double denom_pi = 2.0 * (double)n_i[pi];
+              
+              for (auto &kv : acount[pi]) {
+                
+                const int allele = kv.first;
+                const double p_aj = (double)kv.second / denom_pi;
+                
+                p_sum[allele] += p_aj;
+              }
+            }
+            
+            double sum_p2 = 0.0;
+            
+            for (auto &kv : p_sum) {
+              
+              const double pbar = kv.second / (double)k_eff;
+              sum_p2 += pbar * pbar;
+            }
+            
+            double Htot = 1.0 - sum_p2;
+            
+            const double denom_tot = 2.0 * (double)total_n;
+            
+            if (denom_tot > 1.0)
+              Htot *= (denom_tot / (denom_tot - 1.0));
+            
+            Ht[out_col] = Htot;
           }
-        }
-        
-        double sum_p2 = 0.0;
-        for (auto &kv : p_sum) {
-          const double pbar = kv.second / (double)k_eff_local;
-          sum_p2 += pbar * pbar;
-        }
-        
-        double Htot = 1.0 - sum_p2;
-        const double denom_tot = 2.0 * (double)total_n;
-        if (denom_tot > 1.0)
-          Htot *= (denom_tot / (denom_tot - 1.0));
-        Ht[out_col] = Htot;
       }
-    }
-    out_col++;
+      
+      out_col++;
   }
   
-  CharacterVector loc_names;
-  locus_names_from_colnames(dat, pop_col, loc_names);
+  // attach locus names
+  Rcpp::CharacterVector cn = colnames(dat);
+  Rcpp::CharacterVector loc_names(L);
+  
+  int kk = 0;
+  const bool has_colnames = (cn.size() == p);
+  
+  for (int j = 0; j < p; ++j) {
+    
+    if (j == pop_col) continue;
+    
+    if (has_colnames)
+      loc_names[kk] = cn[j];
+    else
+      loc_names[kk] = std::string("L") + std::to_string(kk + 1);
+    
+    kk++;
+  }
   
   Ho.attr("names") = loc_names;
   Hs.attr("names") = loc_names;
@@ -699,18 +707,11 @@ static void fst_perm_kernel_parallel_rfree(
     const std::vector<std::vector<int>>& strata,
     std::vector<double>& fst_perm_buf,
     std::vector<double>& fst_overall_buf,
-    std::vector<double>& g_overall_buf,
-    std::vector<double>& g_perm_buf
+    std::vector<double>& g_overall_buf,  // B — global G per permutation
+    std::vector<double>& g_perm_buf      // B*L — per-locus G per permutation
 ) {
   const int L = p - 1;
-  const size_t total_size = (size_t)B * (size_t)L;
-  
-  // Ensure buffers are properly sized
-  fst_perm_buf.resize(total_size, NA_REAL);
-  g_perm_buf.resize(total_size, NA_REAL);
-  fst_overall_buf.resize((size_t)B, NA_REAL);
-  g_overall_buf.resize((size_t)B, NA_REAL);
-  
+
   int T = std::max(1, n_threads);
 #ifdef _OPENMP
   omp_set_num_threads(T);
@@ -722,7 +723,6 @@ static void fst_perm_kernel_parallel_rfree(
 #pragma omp parallel
 #endif
 {
-  // Thread-private buffers
   std::vector<int> pm((size_t)n * (size_t)p);
   std::vector<double> fst_tmp((size_t)L, NA_REAL);
   std::vector<double> g_tmp((size_t)L, NA_REAL);
@@ -731,9 +731,7 @@ static void fst_perm_kernel_parallel_rfree(
 #pragma omp for schedule(static)
 #endif
   for (int b = 0; b < B; ++b) {
-    // Generate thread-specific seed
-    const uint64_t sb = seed0 + 0x9e3779b97f4a7c15ULL * (uint64_t)(b + 1) 
-                      + (uint64_t)(omp_get_thread_num() + 1) * 0x9e3779b97f4a7c15ULL;
+    const uint64_t sb = seed0 + 0x9e3779b97f4a7c15ULL * (uint64_t)(b + 1);
     std::mt19937_64 rng(sb);
 
     std::memcpy(pm.data(), dat_ptr, sizeof(int) * (size_t)n * (size_t)p);
@@ -761,15 +759,13 @@ static void fst_perm_kernel_parallel_rfree(
 
     const double fst_overall = fst_overall_ratio_of_sums_ptr_ld(pm.data(), n, n, p, pop_col, missing_code, base);
     const double g_overall = g_stat_all_loci_ptr_ld(pm.data(), n, n, p, pop_col, missing_code, base);
-    
     g_overall_buf[(size_t)b] = g_overall;
-    fst_overall_buf[(size_t)b] = fst_overall;
-    
     const size_t row0 = (size_t)b * (size_t)L;
     for (int ell = 0; ell < L; ++ell) {
       fst_perm_buf[row0 + (size_t)ell] = fst_tmp[(size_t)ell];
       g_perm_buf[row0 + (size_t)ell]   = g_tmp[(size_t)ell];
     }
+    fst_overall_buf[(size_t)b] = fst_overall;
   }
 }
 }
@@ -781,25 +777,21 @@ static void boot_popblock_kernel_parallel_rfree(
     const int* dat_ptr, int n, int p, int pop_col,
     int missing_code, int base,
     int B, int n_threads, uint64_t seed0,
-    const std::vector<std::vector<int>>& base_rows,
-    std::vector<double>& fst_boot_buf,
-    std::vector<double>& fst_overall_buf,
-    std::vector<double>& hs_boot_buf,
-    std::vector<double>& hs_overall_buf,
-    std::vector<double>& ht_boot_buf,
-    std::vector<double>& ht_overall_buf
+    const std::vector<std::vector<int>>& base_rows, // population blocks (indices in original)
+    std::vector<double>& fst_boot_buf,              // B*L
+    std::vector<double>& fst_overall_buf,           // B
+    std::vector<double>& hs_boot_buf,               // B*L
+    std::vector<double>& hs_overall_buf,            // B
+    std::vector<double>& ht_boot_buf,               // B*L
+    std::vector<double>& ht_overall_buf             // B
 ) {
   const int L = p - 1;
   const int P = (int)base_rows.size();
   if (P <= 0) return;
   
-  const size_t total_size = (size_t)B * (size_t)L;
-  fst_boot_buf.resize(total_size, NA_REAL);
-  hs_boot_buf.resize(total_size, NA_REAL);
-  ht_boot_buf.resize(total_size, NA_REAL);
-  fst_overall_buf.resize((size_t)B, NA_REAL);
-  hs_overall_buf.resize((size_t)B, NA_REAL);
-  ht_overall_buf.resize((size_t)B, NA_REAL);
+  int max_block = 0;
+  for (const auto& rows : base_rows) max_block = std::max(max_block, (int)rows.size());
+  const int ld = std::max(1, max_block * P);
   
   int T = std::max(1, n_threads);
 #ifdef _OPENMP
@@ -812,71 +804,55 @@ static void boot_popblock_kernel_parallel_rfree(
 #pragma omp parallel
 #endif
 {
-  // Thread-private buffer (sized for maximum block size + some margin)
-  std::vector<int> mbuf((size_t)n * (size_t)p);
-  std::vector<double> fst_tmp((size_t)L, NA_REAL);
-  std::vector<double> hs_tmp((size_t)L, NA_REAL);
-  std::vector<double> ht_tmp((size_t)L, NA_REAL);
+  std::vector<int> mbuf((size_t)ld * (size_t)p);
+  std::vector<double> fst_tmp((size_t)L), hs_tmp((size_t)L), ht_tmp((size_t)L);
   
 #ifdef _OPENMP
 #pragma omp for schedule(static)
 #endif
   for (int b = 0; b < B; ++b) {
-    const uint64_t sb = seed0 + 0x9e3779b97f4a7c15ULL * (uint64_t)(b + 1)
-                      + (uint64_t)(omp_get_thread_num() + 1) * 0x9e3779b97f4a7c15ULL;
+    const uint64_t sb = seed0 + 0x9e3779b97f4a7c15ULL * (uint64_t)(b + 1);
     std::mt19937_64 rng(sb);
     std::uniform_int_distribution<int> U(0, P - 1);
     
     int rr = 0;
-    for (int k = 0; k < P && rr < n; ++k) {
+    for (int k = 0; k < P; ++k) {
       const int pick = U(rng);
       const auto& rows = base_rows[(size_t)pick];
       const int block_id = k + 1;
       
       for (int rid : rows) {
-        if (rr >= n) break;
         for (int j = 0; j < p; ++j) {
           const int v = mat_get_colmajor(dat_ptr, n, rid, j);
-          mat_set_colmajor(mbuf.data(), n, rr, j, v);
+          mat_set_colmajor(mbuf.data(), ld, rr, j, v);
         }
-        mat_set_colmajor(mbuf.data(), n, rr, pop_col, block_id);
+        mat_set_colmajor(mbuf.data(), ld, rr, pop_col, block_id);
         rr++;
+        if (rr >= ld) break;
       }
+      if (rr >= ld) break;
     }
     const int n_used = rr;
     
-    if (n_used > 0) {
-      wc84_fst_hs_ht_all_loci_ptr_ld(
-        mbuf.data(), n_used, n, p,
-        pop_col, missing_code, base,
-        fst_tmp.data(), hs_tmp.data(), ht_tmp.data()
-      );
-      
-      const double fst_overall = fst_overall_ratio_of_sums_ptr_ld(mbuf.data(), n_used, n, p, pop_col, missing_code, base);
-      const double hs_overall  = mean_across_loci_ptr(hs_tmp.data(), L);
-      const double ht_overall  = mean_across_loci_ptr(ht_tmp.data(), L);
-      
-      fst_overall_buf[(size_t)b] = fst_overall;
-      hs_overall_buf[(size_t)b]  = hs_overall;
-      ht_overall_buf[(size_t)b]  = ht_overall;
-      
-      const size_t row0 = (size_t)b * (size_t)L;
-      for (int ell = 0; ell < L; ++ell) {
-        fst_boot_buf[row0 + (size_t)ell] = fst_tmp[(size_t)ell];
-        hs_boot_buf[row0 + (size_t)ell]  = hs_tmp[(size_t)ell];
-        ht_boot_buf[row0 + (size_t)ell]  = ht_tmp[(size_t)ell];
-      }
-    } else {
-      fst_overall_buf[(size_t)b] = NA_REAL;
-      hs_overall_buf[(size_t)b]  = NA_REAL;
-      ht_overall_buf[(size_t)b]  = NA_REAL;
-      const size_t row0 = (size_t)b * (size_t)L;
-      for (int ell = 0; ell < L; ++ell) {
-        fst_boot_buf[row0 + (size_t)ell] = NA_REAL;
-        hs_boot_buf[row0 + (size_t)ell]  = NA_REAL;
-        ht_boot_buf[row0 + (size_t)ell]  = NA_REAL;
-      }
+    wc84_fst_hs_ht_all_loci_ptr_ld(
+      mbuf.data(), n_used, ld, p,
+      pop_col, missing_code, base,
+      fst_tmp.data(), hs_tmp.data(), ht_tmp.data()
+    );
+    
+    const double fst_overall = fst_overall_ratio_of_sums_ptr_ld(mbuf.data(), n_used, ld, p, pop_col, missing_code, base);
+    const double hs_overall  = mean_across_loci_ptr(hs_tmp.data(), L);
+    const double ht_overall  = mean_across_loci_ptr(ht_tmp.data(), L);
+    
+    const size_t row0 = (size_t)b * (size_t)L;
+    for (int ell = 0; ell < L; ++ell) {
+      fst_boot_buf[row0 + (size_t)ell] = fst_tmp[(size_t)ell];
+      hs_boot_buf [row0 + (size_t)ell] = hs_tmp [(size_t)ell];
+      ht_boot_buf [row0 + (size_t)ell] = ht_tmp [(size_t)ell];
     }
+    fst_overall_buf[(size_t)b] = fst_overall;
+    hs_overall_buf [(size_t)b] = hs_overall;
+    ht_overall_buf [(size_t)b] = ht_overall;
   }
 }
 }
@@ -884,6 +860,27 @@ static void boot_popblock_kernel_parallel_rfree(
 // ============================================================================
 // Export: observed WC84 stats (per-locus + overall) using pointer core
 // ============================================================================
+static inline void locus_names_from_colnames(const IntegerMatrix& dat, int pop_col, CharacterVector& out) {
+  const int p = dat.ncol();
+  const int L = p - 1;
+  CharacterVector cn = colnames(dat);
+  
+  out = CharacterVector(L);
+  int k = 0;
+  const bool has = (cn.size() == p);
+  
+  for (int j = 0; j < p; ++j) {
+    if (j == pop_col) continue;
+    
+    if (has) {
+      out[k] = cn[j];                        // same type: Rcpp::String proxy
+    } else {
+      out[k] = Rcpp::String(std::string("L") + std::to_string(k + 1));
+    }
+    ++k;
+  }
+}
+
 // [[Rcpp::export]]
 List observed_wc84_stats_cpp(const IntegerMatrix& dat,
                              int pop_col_1based = 1,
@@ -964,6 +961,9 @@ List observed_wc84_stats_cpp(const IntegerMatrix& dat,
 
 // ============================================================================
 // Export: per-locus WC84 variance components for locus bootstrap
+// Returns a data frame with columns A, B, C, HS, HT per locus.
+// The caller resamples rows (loci) with replacement and recomputes
+// ratio-of-sums to obtain the locus-bootstrap distribution.
 // ============================================================================
 // [[Rcpp::export]]
 Rcpp::DataFrame wc84_locus_components_cpp(
@@ -1014,7 +1014,7 @@ Rcpp::DataFrame wc84_locus_components_cpp(
 }
 
 // ============================================================================
-// Helper: seed conversion
+// Export: parallel permutation (FST)
 // ============================================================================
 static inline uint64_t seed0_from_double(double seed) {
   const uint64_t s = (uint64_t)(seed < 0 ? -seed : seed);
@@ -1022,7 +1022,13 @@ static inline uint64_t seed0_from_double(double seed) {
 }
 
 // ============================================================================
-// Locus bootstrap for global WC84 estimators (OpenMP)
+// Locus bootstrap for global WC84 estimators (OpenMP).
+// Input: per-locus WC84 variance components (A, B, C) and gene diversities
+//        (HS, HT), already computed by wc84_locus_components_cpp().
+// Each replicate resamples L loci with replacement and recomputes the
+// ratio-of-sums: FST = ΣA/Σ(A+B+C), FIT = Σ(A+B)/Σ(A+B+C),
+// FIS = ΣB/Σ(B+C), HS = mean(HS_l), HT = mean(HT_l).
+// Returns a 5-row summary DataFrame (one row per statistic).
 // ============================================================================
 // [[Rcpp::export]]
 Rcpp::DataFrame locus_bootstrap_wc84_cpp(
@@ -1078,7 +1084,7 @@ Rcpp::DataFrame locus_bootstrap_wc84_cpp(
   const double obs_hs  = sum_hs / Ld;
   const double obs_ht  = sum_ht / Ld;
 
-  // Bootstrap storage
+  // Bootstrap storage (one value per replicate, per statistic)
   std::vector<double> boot_fst((size_t)B_reps, NA_REAL);
   std::vector<double> boot_fit((size_t)B_reps, NA_REAL);
   std::vector<double> boot_fis((size_t)B_reps, NA_REAL);
@@ -1086,23 +1092,25 @@ Rcpp::DataFrame locus_bootstrap_wc84_cpp(
   std::vector<double> boot_ht ((size_t)B_reps, NA_REAL);
 
   const uint64_t seed0 = seed0_from_double(seed);
+
   int T = std::max(1, n_threads);
-  
 #ifdef _OPENMP
   omp_set_num_threads(T);
+#else
+  T = 1;
+#endif
+
+#ifdef _OPENMP
 #pragma omp parallel
 #endif
   {
-    // Thread-local RNG
-    std::mt19937_64 thread_rng(seed0 + (uint64_t)(omp_get_thread_num() + 1) * 0x9e3779b97f4a7c15ULL);
-    
 #ifdef _OPENMP
 #pragma omp for schedule(static)
 #endif
     for (int b = 0; b < B_reps; ++b) {
-      // Use thread-local RNG with reproducible per-iteration state
-      std::mt19937_64 rng = thread_rng;
-      rng.discard(b * 100); // Ensure different streams across iterations
+      // Per-replicate RNG — same seeding pattern as the rest of this file
+      const uint64_t sb = seed0 + 0x9e3779b97f4a7c15ULL * (uint64_t)(b + 1);
+      std::mt19937_64 rng(sb);
       std::uniform_int_distribution<int> U(0, L - 1);
 
       double sa = 0.0, sb2 = 0.0, sc = 0.0, shs = 0.0, sht = 0.0;
@@ -1124,7 +1132,7 @@ Rcpp::DataFrame locus_bootstrap_wc84_cpp(
     }
   }
 
-  // Summarise bootstrap distribution
+  // Summarise bootstrap distribution -> Observed, Boot_Mean, SE, CI_L, CI_U
   const double alpha = (1.0 - conf_level) / 2.0;
 
   auto summarise = [&](const std::vector<double>& x, double obs)
@@ -1137,7 +1145,8 @@ Rcpp::DataFrame locus_bootstrap_wc84_cpp(
     for (double xi : v) { s += xi; s2 += xi * xi; }
     const double mn = s / (double)v.size();
     const double var = s2/(double)v.size() - mn*mn;
-    const double se = std::sqrt(var > 0.0 ? var * (double)v.size() / (double)(v.size() - 1) : 0.0);
+    const double se = std::sqrt(var > 0.0
+      ? var * (double)v.size() / (double)(v.size() - 1) : 0.0);
     std::sort(v.begin(), v.end());
     const int nv = (int)v.size();
     auto q = [&](double p) -> double {
@@ -1158,7 +1167,8 @@ Rcpp::DataFrame locus_bootstrap_wc84_cpp(
 
   CharacterVector stat_names = {"FST", "FIT", "FIS", "HS", "HT"};
   NumericVector obs_v(5), mean_v(5), se_v(5), ci_l_v(5), ci_u_v(5);
-  const std::vector<std::array<double,5>> rows = {r_fst, r_fit, r_fis, r_hs, r_ht};
+  const std::vector<std::array<double,5>> rows =
+    {r_fst, r_fit, r_fis, r_hs, r_ht};
   for (int i = 0; i < 5; ++i) {
     obs_v[i]  = rows[(size_t)i][0];
     mean_v[i] = rows[(size_t)i][1];
@@ -1177,9 +1187,6 @@ Rcpp::DataFrame locus_bootstrap_wc84_cpp(
   );
 }
 
-// ============================================================================
-// Export: parallel permutation (FST)
-// ============================================================================
 // [[Rcpp::export]]
 List batch_permute_wc84_fst_parallel(const IntegerMatrix& dat,
                                            int pop_col_1based,
@@ -1213,7 +1220,7 @@ List batch_permute_wc84_fst_parallel(const IntegerMatrix& dat,
     stop("Unknown perm_scheme.");
   }
   
-  // observed statistics
+  // observed (pointer core)
   NumericVector fst_obs(L, NA_REAL);
   NumericVector g_obs(L, NA_REAL);
   int out_col = 0;
@@ -1229,18 +1236,23 @@ List batch_permute_wc84_fst_parallel(const IntegerMatrix& dat,
   }
   const double fst_overall_obs = fst_overall_ratio_of_sums_ptr_ld(dat.begin(), n, n, p, pop_col, missing_code, base);
   const double g_overall_obs = g_stat_all_loci_ptr_ld(dat.begin(), n, n, p, pop_col, missing_code, base);
+  int T = std::max(1, n_threads);
+#ifndef _OPENMP
+  T = 1;
+#endif
+  
   const uint64_t seed0 = seed0_from_double(seed);
   
-  std::vector<double> fst_perm_buf;
-  std::vector<double> fst_overall_buf;
-  std::vector<double> g_overall_buf;
-  std::vector<double> g_perm_buf;
+  std::vector<double> fst_perm_buf((size_t)B * (size_t)L, NA_REAL);
+  std::vector<double> fst_overall_buf((size_t)B, NA_REAL);
+  std::vector<double> g_overall_buf((size_t)B, NA_REAL);
+  std::vector<double> g_perm_buf((size_t)B * (size_t)L, NA_REAL);
 
   fst_perm_kernel_parallel_rfree(
     dat.begin(), n, p,
     pop_col, missing_code, base,
     perm_mode,
-    B, n_threads, seed0,
+    B, T, seed0,
     strata,
     fst_perm_buf,
     fst_overall_buf,
@@ -1254,12 +1266,10 @@ List batch_permute_wc84_fst_parallel(const IntegerMatrix& dat,
   for (int b = 0; b < B; ++b) {
     fst_overall_perm[b] = fst_overall_buf[(size_t)b];
     const size_t row0 = (size_t)b * (size_t)L;
-    for (int ell = 0; ell < L; ++ell) {
-      fst_perm(b, ell) = fst_perm_buf[row0 + (size_t)ell];
-    }
+    for (int ell = 0; ell < L; ++ell) fst_perm(b, ell) = fst_perm_buf[row0 + (size_t)ell];
   }
   
-  // FST-based per-locus p-values
+  // FST-based per-locus p-values (kept for reference)
   NumericVector p_fst(L, NA_REAL);
   for (int ell = 0; ell < L; ++ell) {
     const double obs = fst_obs[ell];
@@ -1275,20 +1285,18 @@ List batch_permute_wc84_fst_parallel(const IntegerMatrix& dat,
         if (v >= obs) count++;
       } else if (pval_method == "less") {
         if (v <= obs) count++;
-      } else { // two_sided_abs
+      } else {
         if (std::fabs(v) >= std::fabs(obs)) count++;
       }
     }
     if (valid > 0) p_fst[ell] = (1.0 + count) / ((double)valid + 1.0);
   }
 
-  // G-based per-locus p-values
+  // G-based per-locus p-values (one-sided: G >= 0 by definition)
   NumericMatrix g_perm(B, L);
   for (int b = 0; b < B; ++b) {
     const size_t row0 = (size_t)b * (size_t)L;
-    for (int ell = 0; ell < L; ++ell) {
-      g_perm(b, ell) = g_perm_buf[row0 + (size_t)ell];
-    }
+    for (int ell = 0; ell < L; ++ell) g_perm(b, ell) = g_perm_buf[row0 + (size_t)ell];
   }
 
   NumericVector p_G(L, NA_REAL);
@@ -1305,7 +1313,7 @@ List batch_permute_wc84_fst_parallel(const IntegerMatrix& dat,
     if (valid > 0) p_G[ell] = (1.0 + count) / ((double)valid + 1.0);
   }
 
-  // Overall p-value (G statistic)
+  // Overall p-value uses G statistic (FSTAT convention), not theta.
   double p_fst_overall = NA_REAL;
   if (std::isfinite(g_overall_obs)) {
     int count = 0, valid = 0;
@@ -1313,7 +1321,7 @@ List batch_permute_wc84_fst_parallel(const IntegerMatrix& dat,
       const double v = g_overall_buf[(size_t)b];
       if (!std::isfinite(v)) continue;
       ++valid;
-      if (v >= g_overall_obs) ++count;
+      if (v >= g_overall_obs) ++count;  // one-sided: G_perm >= G_obs
     }
     if (valid > 0) p_fst_overall = (1.0 + count) / ((double)valid + 1.0);
   }
@@ -1327,8 +1335,8 @@ List batch_permute_wc84_fst_parallel(const IntegerMatrix& dat,
   p_fst.attr("names")   = loc_names;
   p_G.attr("names")     = loc_names;
   
-  NumericVector g_overall_perm(B, NA_REAL);
-  for (int b = 0; b < B; ++b) g_overall_perm[b] = g_overall_buf[(size_t)b];
+  NumericVector g_overall_perm(B, NA_REAL);  //check place
+  for (int b = 0; b < B; ++b) g_overall_perm[b] = g_overall_buf[(size_t)b]; //check place
   
   return List::create(
     _["FST_obs"]         = fst_obs,
@@ -1346,7 +1354,7 @@ List batch_permute_wc84_fst_parallel(const IntegerMatrix& dat,
     _["perm_scheme"]     = perm_scheme,
     _["pval_method"]     = pval_method,
     _["n_perm"]          = B,
-    _["n_threads"]       = n_threads,
+    _["n_threads"]       = T,
     _["seed"]            = seed
   );
 }
@@ -1354,6 +1362,7 @@ List batch_permute_wc84_fst_parallel(const IntegerMatrix& dat,
 // ============================================================================
 // Export: parallel pop-block bootstrap (FST + HS + HT)
 // ============================================================================
+
 // [[Rcpp::export]]
 List boot_popblock_wc84_parallel(const IntegerMatrix& mat,
                                        int pop_col_1based = 1,
@@ -1382,26 +1391,31 @@ List boot_popblock_wc84_parallel(const IntegerMatrix& mat,
                                  fst_obs_buf.data(), hs_obs_buf.data(), ht_obs_buf.data());
   
   NumericVector fst_obs(L), hs_obs(L), ht_obs(L);
-  for (int i = 0; i < L; ++i) { 
-    fst_obs[i] = fst_obs_buf[i]; 
-    hs_obs[i] = hs_obs_buf[i]; 
-    ht_obs[i] = ht_obs_buf[i]; 
-  }
+  for (int i = 0; i < L; ++i) { fst_obs[i] = fst_obs_buf[i]; hs_obs[i] = hs_obs_buf[i]; ht_obs[i] = ht_obs_buf[i]; }
   
   const double fst_overall_obs = fst_overall_ratio_of_sums_ptr_ld(mat.begin(), n, n, p, pop_col, missing_code, base);
   const double hs_overall_obs  = mean_across_loci_ptr(hs_obs_buf.data(), L);
   const double ht_overall_obs  = mean_across_loci_ptr(ht_obs_buf.data(), L);
   
+  int T = std::max(1, n_threads);
+#ifndef _OPENMP
+  T = 1;
+#endif
   const uint64_t seed0 = seed0_from_double(seed);
   
   // buffers
-  std::vector<double> fst_boot_buf, hs_boot_buf, ht_boot_buf;
-  std::vector<double> fst_overall_buf, hs_overall_buf, ht_overall_buf;
+  std::vector<double> fst_boot_buf((size_t)B * (size_t)L, NA_REAL);
+  std::vector<double> hs_boot_buf ((size_t)B * (size_t)L, NA_REAL);
+  std::vector<double> ht_boot_buf ((size_t)B * (size_t)L, NA_REAL);
+  
+  std::vector<double> fst_overall_buf((size_t)B, NA_REAL);
+  std::vector<double> hs_overall_buf ((size_t)B, NA_REAL);
+  std::vector<double> ht_overall_buf ((size_t)B, NA_REAL);
   
   boot_popblock_kernel_parallel_rfree(
     mat.begin(), n, p, pop_col,
     missing_code, base,
-    B, n_threads, seed0,
+    B, T, seed0,
     base_rows,
     fst_boot_buf, fst_overall_buf,
     hs_boot_buf,  hs_overall_buf,
@@ -1419,8 +1433,8 @@ List boot_popblock_wc84_parallel(const IntegerMatrix& mat,
     const size_t row0 = (size_t)b * (size_t)L;
     for (int ell = 0; ell < L; ++ell) {
       fst_boot(b, ell) = fst_boot_buf[row0 + (size_t)ell];
-      hs_boot(b, ell)  = hs_boot_buf[row0 + (size_t)ell];
-      ht_boot(b, ell)  = ht_boot_buf[row0 + (size_t)ell];
+      hs_boot (b, ell) = hs_boot_buf [row0 + (size_t)ell];
+      ht_boot (b, ell) = ht_boot_buf [row0 + (size_t)ell];
     }
   }
   
@@ -1452,7 +1466,7 @@ List boot_popblock_wc84_parallel(const IntegerMatrix& mat,
     
     _["boot_type"] = "pop_block",
     _["n_boot"] = B,
-    _["n_threads"] = n_threads,
+    _["n_threads"] = T,
     _["seed"] = seed,
     _["locus_names"] = loc_names
   );
@@ -1460,6 +1474,8 @@ List boot_popblock_wc84_parallel(const IntegerMatrix& mat,
 
 // ============================================================================
 // Individual bootstrap for HS: resample individuals within each population
+// Returns HS_boot (B x L) and HS_overall_boot (B) — loci with replacement
+// would give locus-level CI, handled separately via locus_bootstrap_wc84_cpp.
 // ============================================================================
 // [[Rcpp::export]]
 List boot_indiv_hs_cpp(
@@ -1494,7 +1510,6 @@ List boot_indiv_hs_cpp(
 #ifndef _OPENMP
   T = 1;
 #endif
-
 #ifdef _OPENMP
   omp_set_num_threads(T);
 #pragma omp parallel
@@ -1509,8 +1524,7 @@ List boot_indiv_hs_cpp(
 #pragma omp for schedule(static)
 #endif
     for (int b = 0; b < B; ++b) {
-      const uint64_t sb = seed0 + 0x9e3779b97f4a7c15ULL * (uint64_t)(b + 1)
-                        + (uint64_t)(omp_get_thread_num() + 1) * 0x9e3779b97f4a7c15ULL;
+      const uint64_t sb = seed0 + 0x9e3779b97f4a7c15ULL * (uint64_t)(b + 1);
       std::mt19937_64 rng(sb);
 
       int rr = 0;
@@ -1521,28 +1535,21 @@ List boot_indiv_hs_cpp(
         std::uniform_int_distribution<int> U_indiv(0, nk - 1);
         for (int i = 0; i < nk; ++i) {
           const int rid = rows[(size_t)U_indiv(rng)];
-          for (int j = 0; j < p; ++j) {
+          for (int j = 0; j < p; ++j)
             mat_set_colmajor(mbuf.data(), n, rr, j,
                              mat_get_colmajor(dat.begin(), n, rid, j));
-          }
           rr++;
-          if (rr >= n) break;
         }
-        if (rr >= n) break;
-      }
-      
-      if (rr > 0) {
-        wc84_fst_hs_ht_all_loci_ptr_ld(
-          mbuf.data(), rr, n, p,
-          pop_col, missing_code, base,
-          fst_tmp.data(), hs_tmp.data(), ht_tmp.data()
-        );
       }
 
+      wc84_fst_hs_ht_all_loci_ptr_ld(
+        mbuf.data(), rr, n, p,
+        pop_col, missing_code, base,
+        fst_tmp.data(), hs_tmp.data(), ht_tmp.data()
+      );
+
       const size_t row0 = (size_t)b * (size_t)L;
-      for (int ell = 0; ell < L; ++ell) {
-        hs_boot_buf[row0 + (size_t)ell] = hs_tmp[(size_t)ell];
-      }
+      for (int ell = 0; ell < L; ++ell) hs_boot_buf[row0 + (size_t)ell] = hs_tmp[(size_t)ell];
       hs_overall_buf[(size_t)b] = mean_across_loci_ptr(hs_tmp.data(), L);
     }
   }
@@ -1552,9 +1559,7 @@ List boot_indiv_hs_cpp(
   for (int b = 0; b < B; ++b) {
     hs_overall_boot[b] = hs_overall_buf[(size_t)b];
     const size_t row0 = (size_t)b * (size_t)L;
-    for (int ell = 0; ell < L; ++ell) {
-      hs_boot(b, ell) = hs_boot_buf[row0 + (size_t)ell];
-    }
+    for (int ell = 0; ell < L; ++ell) hs_boot(b, ell) = hs_boot_buf[row0 + (size_t)ell];
   }
 
   CharacterVector loc_names;
@@ -1566,324 +1571,6 @@ List boot_indiv_hs_cpp(
     _["HS_overall_boot"] = hs_overall_boot,
     _["locus_names"]     = loc_names,
     _["boot_type"]       = "individual",
-    _["n_boot"]          = B,
-    _["n_threads"]       = n_threads,
-    _["seed"]            = seed
-  );
-}
-
-// ============================================================================
-// Export: G-based permutation test (parallel, pop-label shuffle)
-// ============================================================================
-// [[Rcpp::export]]
-List batch_permute_g_stat_parallel(
-    const IntegerMatrix& dat,
-    int    pop_col_1based = 1,
-    int    missing_code   = 0,
-    int    base           = 1000,
-    int    B              = 5000,
-    int    n_threads      = 1,
-    double seed           = 1.0
-) {
-  const int n = dat.nrow();
-  const int p = dat.ncol();
-  if (p < 2) stop("Need at least 2 columns: pop + >=1 locus.");
-  if (B <= 0) stop("B must be positive.");
-  if (base <= 1) stop("base must be > 1.");
-
-  const int pop_col = pop_col_1based - 1;
-  if (pop_col < 0 || pop_col >= p) stop("pop_col out of range.");
-
-  const int L = p - 1;
-
-  // Observed G
-  NumericVector g_obs(L, NA_REAL);
-  int out_col = 0;
-  for (int j = 0; j < p; ++j) {
-    if (j == pop_col) continue;
-    g_obs[out_col] = g_stat_differentiation_locus_ptr_ld(
-      dat.begin(), n, n, p, j, pop_col, missing_code, base);
-    out_col++;
-  }
-  const double g_obs_overall = g_stat_all_loci_ptr_ld(
-    dat.begin(), n, n, p, pop_col, missing_code, base);
-
-  // Permutation
-  std::vector<double> g_perm_buf((size_t)B * (size_t)L, NA_REAL);
-  std::vector<double> g_overall_buf((size_t)B, NA_REAL);
-
-  const uint64_t seed0 = seed0_from_double(seed);
-  int T = std::max(1, n_threads);
-
-#ifdef _OPENMP
-  omp_set_num_threads(T);
-#pragma omp parallel
-#endif
-  {
-    std::vector<int> pm((size_t)n * (size_t)p);
-    std::vector<double> g_tmp((size_t)L, NA_REAL);
-
-#ifdef _OPENMP
-#pragma omp for schedule(static)
-#endif
-    for (int b = 0; b < B; ++b) {
-      const uint64_t sb = seed0 + 0x9e3779b97f4a7c15ULL * (uint64_t)(b + 1)
-                        + (uint64_t)(omp_get_thread_num() + 1) * 0x9e3779b97f4a7c15ULL;
-      std::mt19937_64 rng(sb);
-
-      std::memcpy(pm.data(), dat.begin(), sizeof(int) * (size_t)n * (size_t)p);
-      permute_pop_labels_once_rng_buf(pm.data(), n, p, pop_col, rng);
-
-      int oc = 0;
-      for (int j = 0; j < p; ++j) {
-        if (j == pop_col) continue;
-        g_tmp[oc] = g_stat_differentiation_locus_ptr_ld(
-          pm.data(), n, n, p, j, pop_col, missing_code, base);
-        oc++;
-      }
-
-      g_overall_buf[(size_t)b] = g_stat_all_loci_ptr_ld(
-        pm.data(), n, n, p, pop_col, missing_code, base);
-
-      const size_t row0 = (size_t)b * (size_t)L;
-      for (int ell = 0; ell < L; ++ell) {
-        g_perm_buf[row0 + (size_t)ell] = g_tmp[(size_t)ell];
-      }
-    }
-  }
-
-  // Materialize permutation matrices
-  NumericMatrix g_perm(B, L);
-  NumericVector g_overall_perm(B, NA_REAL);
-  for (int b = 0; b < B; ++b) {
-    g_overall_perm[b] = g_overall_buf[(size_t)b];
-    const size_t row0 = (size_t)b * (size_t)L;
-    for (int ell = 0; ell < L; ++ell) {
-      g_perm(b, ell) = g_perm_buf[row0 + (size_t)ell];
-    }
-  }
-
-  // Per-locus p-values (one-sided)
-  NumericVector p_G(L, NA_REAL);
-  for (int ell = 0; ell < L; ++ell) {
-    const double obs = g_obs[ell];
-    if (!std::isfinite(obs)) continue;
-    int count = 0, valid = 0;
-    for (int b = 0; b < B; ++b) {
-      const double v = g_perm(b, ell);
-      if (!std::isfinite(v)) continue;
-      ++valid;
-      if (v >= obs) ++count;
-    }
-    if (valid > 0) p_G[ell] = (1.0 + count) / ((double)valid + 1.0);
-  }
-
-  // Global p-value
-  double p_G_overall = NA_REAL;
-  if (std::isfinite(g_obs_overall)) {
-    int count = 0, valid = 0;
-    for (int b = 0; b < B; ++b) {
-      const double v = g_overall_buf[(size_t)b];
-      if (!std::isfinite(v)) continue;
-      ++valid;
-      if (v >= g_obs_overall) ++count;
-    }
-    if (valid > 0) p_G_overall = (1.0 + count) / ((double)valid + 1.0);
-  }
-
-  CharacterVector loc_names;
-  locus_names_from_colnames(dat, pop_col, loc_names);
-  colnames(g_perm) = loc_names;
-  g_obs.attr("names") = loc_names;
-  p_G.attr("names")   = loc_names;
-
-  return List::create(
-    _["G_locus_obs"]    = g_obs,
-    _["G_overall_obs"]  = g_obs_overall,
-    _["G_locus_perm"]   = g_perm,
-    _["G_overall_perm"] = g_overall_perm,
-    _["p_G"]            = p_G,
-    _["p_G_overall"]    = p_G_overall,
-    _["locus_names"]    = loc_names,
-    _["n_perm"]         = B,
-    _["n_threads"]      = n_threads,
-    _["seed"]           = seed
-  );
-}
-
-// ============================================================================
-// Export: pairwise G-test (parallel, pop-label shuffle within each pair)
-// ============================================================================
-// [[Rcpp::export]]
-List batch_permute_g_stat_pairwise_parallel(
-    const IntegerMatrix& dat,
-    int    pop_col_1based = 1,
-    int    missing_code   = 0,
-    int    base           = 1000,
-    int    B              = 5000,
-    int    n_threads      = 1,
-    double seed           = 1.0
-) {
-  const int n = dat.nrow();
-  const int p = dat.ncol();
-  if (p < 2) stop("Need at least 2 columns.");
-  if (B <= 0) stop("B must be positive.");
-  if (base <= 1) stop("base must be > 1.");
-
-  const int pop_col = pop_col_1based - 1;
-  if (pop_col < 0 || pop_col >= p) stop("pop_col out of range.");
-
-  // Identify populations
-  std::unordered_map<int,int> pop_to_idx;
-  std::vector<int> pop_labels_vec;
-  for (int i = 0; i < n; ++i) {
-    const int code = dat(i, pop_col);
-    if (pop_to_idx.find(code) == pop_to_idx.end()) {
-      pop_to_idx[code] = (int)pop_labels_vec.size();
-      pop_labels_vec.push_back(code);
-    }
-  }
-  std::sort(pop_labels_vec.begin(), pop_labels_vec.end());
-  const int n_pops = (int)pop_labels_vec.size();
-  if (n_pops < 2) stop("Need at least 2 populations.");
-
-  // Build row indices per population
-  std::vector<std::vector<int>> pop_rows(n_pops);
-  for (int i = 0; i < n; ++i) {
-    const int code = dat(i, pop_col);
-    auto it = std::find(pop_labels_vec.begin(), pop_labels_vec.end(), code);
-    const int idx = (int)(it - pop_labels_vec.begin());
-    pop_rows[(size_t)idx].push_back(i);
-  }
-
-  // All pairs
-  std::vector<std::pair<int,int>> pairs;
-  for (int a = 0; a < n_pops - 1; ++a)
-    for (int b2 = a + 1; b2 < n_pops; ++b2)
-      pairs.push_back({a, b2});
-
-  const int n_pairs = (int)pairs.size();
-
-  // Observed G per pair
-  NumericVector g_obs_pairs(n_pairs, NA_REAL);
-  IntegerVector pop1_idx(n_pairs), pop2_idx(n_pairs);
-  for (int k = 0; k < n_pairs; ++k) {
-    const int pa = pairs[(size_t)k].first;
-    const int pb = pairs[(size_t)k].second;
-    pop1_idx[k] = pop_labels_vec[(size_t)pa];
-    pop2_idx[k] = pop_labels_vec[(size_t)pb];
-
-    const auto& ra = pop_rows[(size_t)pa];
-    const auto& rb = pop_rows[(size_t)pb];
-    const int n_sub = (int)(ra.size() + rb.size());
-
-    std::vector<int> sub((size_t)n_sub * (size_t)p);
-    int rr = 0;
-    for (int idx : ra) {
-      for (int j = 0; j < p; ++j) {
-        mat_set_colmajor(sub.data(), n_sub, rr, j,
-                         mat_get_colmajor(dat.begin(), n, idx, j));
-      }
-      mat_set_colmajor(sub.data(), n_sub, rr, pop_col, 1);
-      rr++;
-    }
-    for (int idx : rb) {
-      for (int j = 0; j < p; ++j) {
-        mat_set_colmajor(sub.data(), n_sub, rr, j,
-                         mat_get_colmajor(dat.begin(), n, idx, j));
-      }
-      mat_set_colmajor(sub.data(), n_sub, rr, pop_col, 2);
-      rr++;
-    }
-    g_obs_pairs[k] = g_stat_all_loci_ptr_ld(
-      sub.data(), n_sub, n_sub, p, pop_col, missing_code, base);
-  }
-
-  // Permutation buffers
-  std::vector<double> g_perm_buf((size_t)B * (size_t)n_pairs, NA_REAL);
-  const uint64_t seed0 = seed0_from_double(seed);
-  int T = std::max(1, n_threads);
-
-#ifdef _OPENMP
-  omp_set_num_threads(T);
-#pragma omp parallel
-#endif
-  {
-    // Thread-local buffer for submatrix
-    std::vector<int> sub_buf;
-
-#ifdef _OPENMP
-#pragma omp for schedule(static)
-#endif
-    for (int b = 0; b < B; ++b) {
-      const uint64_t sb = seed0 + 0x9e3779b97f4a7c15ULL * (uint64_t)(b + 1)
-                        + (uint64_t)(omp_get_thread_num() + 1) * 0x9e3779b97f4a7c15ULL;
-      std::mt19937_64 rng(sb);
-
-      const size_t row0 = (size_t)b * (size_t)n_pairs;
-
-      for (int k = 0; k < n_pairs; ++k) {
-        const int pa = pairs[(size_t)k].first;
-        const int pb = pairs[(size_t)k].second;
-        const auto& ra = pop_rows[(size_t)pa];
-        const auto& rb = pop_rows[(size_t)pb];
-        const int n_sub = (int)(ra.size() + rb.size());
-
-        sub_buf.resize((size_t)n_sub * (size_t)p);
-        int rr = 0;
-        for (int idx : ra) {
-          for (int j = 0; j < p; ++j) {
-            mat_set_colmajor(sub_buf.data(), n_sub, rr, j,
-                             mat_get_colmajor(dat.begin(), n, idx, j));
-          }
-          mat_set_colmajor(sub_buf.data(), n_sub, rr, pop_col, 1);
-          rr++;
-        }
-        for (int idx : rb) {
-          for (int j = 0; j < p; ++j) {
-            mat_set_colmajor(sub_buf.data(), n_sub, rr, j,
-                             mat_get_colmajor(dat.begin(), n, idx, j));
-          }
-          mat_set_colmajor(sub_buf.data(), n_sub, rr, pop_col, 2);
-          rr++;
-        }
-
-        // Shuffle pop labels within this pair's sub-matrix
-        permute_pop_labels_once_rng_buf(sub_buf.data(), n_sub, p, pop_col, rng);
-
-        g_perm_buf[row0 + (size_t)k] = g_stat_all_loci_ptr_ld(
-          sub_buf.data(), n_sub, n_sub, p, pop_col, missing_code, base);
-      }
-    }
-  }
-
-  // Materialize + p-values
-  NumericMatrix g_perm_pairs(B, n_pairs);
-  NumericVector p_G_pairs(n_pairs, NA_REAL);
-
-  for (int k = 0; k < n_pairs; ++k) {
-    const double obs = g_obs_pairs[k];
-    int count = 0, valid = 0;
-    for (int b = 0; b < B; ++b) {
-      const double v = g_perm_buf[(size_t)b * (size_t)n_pairs + (size_t)k];
-      g_perm_pairs(b, k) = v;
-      if (!std::isfinite(v)) continue;
-      ++valid;
-      if (std::isfinite(obs) && v >= obs) ++count;
-    }
-    if (valid > 0 && std::isfinite(obs))
-      p_G_pairs[k] = (1.0 + count) / ((double)valid + 1.0);
-  }
-
-  return List::create(
-    _["G_obs"]       = g_obs_pairs,
-    _["G_perm"]      = g_perm_pairs,
-    _["p_G"]         = p_G_pairs,
-    _["pop1_code"]   = pop1_idx,
-    _["pop2_code"]   = pop2_idx,
-    _["n_pairs"]     = n_pairs,
-    _["n_perm"]      = B,
-    _["n_threads"]   = n_threads,
-    _["seed"]        = seed
+    _["n_boot"]          = B
   );
 }
