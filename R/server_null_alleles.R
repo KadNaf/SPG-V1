@@ -441,60 +441,8 @@ server_null_alleles <- function(id, rv) {
     })
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  GLOBAL FST (raw + ENA)
+    #  GLOBAL FST (raw + ENA), with per-locus accumulators kept for bootstrap
     # ══════════════════════════════════════════════════════════════════════════
-    compute_fst_global <- function(em_res) {
-      markers <- names(em_res); pops <- names(em_res[[markers[1]]])
-      s1 <- s3 <- s1c <- s3c <- 0.0
-      rows <- vector("list", length(markers))
-      for (li in seq_along(markers)) {
-        loc <- markers[li]; em_loc <- em_res[[loc]]
-        alleles_obs <- sort(unique(unlist(lapply(em_loc, function(e) e$alleles))))
-        ni_raw  <- sapply(pops, function(p) { e<-em_loc[[p]]; max(0L,e$efpop-e$n_absent-e$n_null_homo) })
-        ni_corr <- sapply(pops, function(p) { e<-em_loc[[p]]; max(0L,e$efpop-e$n_absent) })
-        r_raw <- sum(ni_raw>0L); r_corr <- sum(ni_corr>0L)
-        N_raw <- sum(ni_raw); N2_raw <- sum(ni_raw^2)
-        N_cor <- sum(ni_corr); N2_cor <- sum(ni_corr^2)
-        nc_raw  <- if (N_raw>0&&r_raw>1)  (N_raw -N2_raw /N_raw ) /(r_raw -1) else 0.0
-        nc_corr <- if (N_cor>0&&r_corr>1) (N_cor -N2_cor /N_cor ) /(r_corr-1) else 0.0
-        s1l <- s3l <- s1lc <- s3lc <- 0.0
-        for (a in alleles_obs) {
-          a_chr <- as.character(a)
-          pop_raw <- lapply(pops, function(p) {
-            e <- em_loc[[p]]; ni <- max(0L,e$efpop-e$n_absent-e$n_null_homo)
-            pf <- if (a_chr %in% names(e$genefreq_obs)) e$genefreq_obs[[a_chr]] else 0.0
-            AA <- if (a_chr %in% names(e$H_ii)) e$H_ii[[a_chr]] else 0L
-            list(ni=ni, nA=pf*2L*ni, AA=AA, AA_corr=AA)
-          })
-          cmp <- weir_components_allele(pop_raw, use_corr=FALSE)
-          s1l <- s1l+cmp$s2P; s3l <- s3l+cmp$s2P+cmp$s2I+cmp$s2G
-          pop_ena <- lapply(pops, function(p) {
-            e <- em_loc[[p]]; ni <- max(0L,e$efpop-e$n_absent)
-            pf <- if (a_chr %in% names(e$pfreq)) e$pfreq[[a_chr]] else 0.0
-            AA <- if (a_chr %in% names(e$H_ii)) e$H_ii[[a_chr]] else 0L
-            d  <- pf+2.0*e$rd; AAc <- if (AA>0&&d>0) AA*(pf/d) else 0.0
-            list(ni=ni, nA=pf*2L*ni, AA=AA, AA_corr=AAc)
-          })
-          cmpc <- weir_components_allele(pop_ena, use_corr=TRUE)
-          s1lc <- s1lc+cmpc$s2P; s3lc <- s3lc+cmpc$s2P+cmpc$s2I+cmpc$s2G
-        }
-        fst_loc  <- if (s3l  != 0) s1l /s3l  else NA_real_
-        fst_locc <- if (s3lc != 0) s1lc/s3lc else NA_real_
-        if (!is.na(fst_loc)  && nc_raw >0) { s1  <- s1 +s1l *nc_raw;  s3  <- s3 +s3l *nc_raw  }
-        if (!is.na(fst_locc) && nc_corr>0) { s1c <- s1c+s1lc*nc_corr; s3c <- s3c+s3lc*nc_corr }
-        rows[[li]] <- data.frame(Locus=loc,
-          FST_raw=round(fst_loc,6), FST_ENA=round(fst_locc,6),
-          Delta_FST=round(fst_locc-fst_loc,6),
-          N_pops_raw=r_raw, N_pops_ENA=r_corr, stringsAsFactors=FALSE)
-      }
-      list(global_raw=if(s3>0)s1/s3 else NA_real_,
-           global_ena=if(s3c>0)s1c/s3c else NA_real_,
-           per_locus=do.call(rbind,rows),
-           s1v=sapply(rows,function(r) { e<-em_res[[r$Locus]]; 0 }),  # placeholder
-           s1_vec=NULL, s3_vec=NULL, s1c_vec=NULL, s3c_vec=NULL)
-    }
-
-    # ── Global FST with per-locus accumulators for bootstrap ───────────────────
     compute_fst_global_full <- function(em_res) {
       markers <- names(em_res); pops <- names(em_res[[markers[1]]])
       s1_vec <- s3_vec <- s1c_vec <- s3c_vec <- numeric(length(markers))
