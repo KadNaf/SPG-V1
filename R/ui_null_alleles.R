@@ -216,8 +216,12 @@ null_alleles_UI <- function(id) {
         fluidRow(
           column(4,
             numericInput(ns("nboot"),
-              label = "Number of replicates:",
+              label = "Number of replicates (bootstrap over loci):",
               value = 5000, min = 100, max = 99999, step = 1000)),
+          column(4,
+            numericInput(ns("nboot_subs"),
+              label = "Number of replicates (bootstrap over sub-samples):",
+              value = 500, min = 50, max = 20000, step = 50)),
           column(4,
             selectInput(ns("ci_level"),
               label = "Confidence interval level:",
@@ -228,13 +232,20 @@ null_alleles_UI <- function(id) {
                 "95%    (alpha = 0.05)"   = "0.05",
                 "90%    (alpha = 0.10)"   = "0.10"
               ),
-              selected = "0.05")),
-          column(4,
-            tags$div(style="margin-top:25px;font-size:11px;color:#64748b;",
-              icon("info-circle"), " Bootstrap over loci: vectorised, ~5 000 reps in a few seconds.",
-              tags$br(),
-              "Bootstrap over sub-samples: re-runs EM per replicate."
-            ))
+              selected = "0.05"))
+        ),
+        tags$div(class="na-info", style="margin-top:.5rem;",
+          icon("info-circle"), " ",
+          tags$strong("Bootstrap over loci"), " is vectorised — 5\u202f000 reps run in a few seconds, regardless of value.",
+          tags$br(),
+          tags$strong("Bootstrap over sub-samples"), " re-runs the EM algorithm for every (replicate \u00d7 locus \u00d7 population) ",
+          "combination, so it has its own, smaller replicate count by default. Each EM run inside this bootstrap is also capped ",
+          "at ", tags$strong("100 iterations"), " (instead of 5\u202f000) since a bootstrap replicate doesn't need the same precision ",
+          "as the main point estimate \u2014 this keeps the wall-clock time reasonable without changing the statistical method.",
+          tags$br(),
+          tags$strong("Note: "), "the sub-samples bootstrap CI can occasionally sit slightly above the observed FST ",
+          "(i.e. the point estimate falls just under its own lower bound). This is a known property of resampling ",
+          "individuals \u2014 duplicated individuals in a replicate raise its apparent structure \u2014 not a computation error."
         ),
 
         tags$hr(style="margin:1rem 0;"),

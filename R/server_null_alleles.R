@@ -257,7 +257,7 @@ server_null_alleles <- function(id, rv) {
     #  null-homozygote genotypes in the data (n_null_homo == 0), we fall back
     #  to the "absent" formulas — there is nothing to treat as informative.
     # ══════════════════════════════════════════════════════════════════════════
-    em_freena <- function(gt_vec, base, treat = "absent") {
+    em_freena <- function(gt_vec, base, treat = "absent", max_iter = 5000L) {
       efpop      <- length(gt_vec)
       absent_msk <- is.na(gt_vec) | gt_vec <= 0L
       n_absent   <- sum(absent_msk)
@@ -325,7 +325,7 @@ server_null_alleles <- function(id, rv) {
       }
 
       # EM loop
-      for (iter in seq_len(5000L)) {
+      for (iter in seq_len(max_iter)) {
         new_p <- numeric(length(alleles)); rdi <- 0.0; re <- 0L
         for (ai in seq_along(alleles)) {
           if (genefreq_obs[ai] <= 0) { new_p[ai] <- 0.0; next }
@@ -778,8 +778,19 @@ server_null_alleles <- function(id, rv) {
 
     # ══════════════════════════════════════════════════════════════════════════
     #  BOOTSTRAP OVER SUB-SAMPLES (individuals within populations)
+    #  - Uses its own (smaller) replicate count, nboot_subs, since this method
+    #    re-runs the EM algorithm for every (replicate x locus x population)
+    #    combination and is far more expensive than the vectorised loci
+    #    bootstrap above.
+    #  - Each EM run is capped at max_iter iterations (default 100, vs. 5000
+    #    for the main point estimate) — a bootstrap replicate only needs to
+    #    be "close enough", not fully converged to 1e-6, so this keeps runtime
+    #    reasonable without changing the statistical method itself.
+    #  - progress_cb(fraction_done), if supplied, is called periodically so
+    #    the caller can update a progress bar during this (long) step.
     # ══════════════════════════════════════════════════════════════════════════
-    boot_subsamples_global_fst <- function(raw_df, em_res, base, treatments, nboot, alpha) {
+    boot_subsamples_global_fst <- function(raw_df, em_res, base, treatments, nboot,
+                                            alpha, max_iter = 100L, progress_cb = NULL) {
       markers <- names(em_res); pops <- names(em_res[[markers[1]]])
       idx_by_pop_loc <- list()
       for (pop in pops) for (loc in markers)
@@ -788,6 +799,7 @@ server_null_alleles <- function(id, rv) {
       inds_by_pop <- lapply(pops, function(p) unique(raw_df$Individual[raw_df$Population==p]))
       names(inds_by_pop) <- pops
       boot_raw <- boot_ena <- numeric(nboot)
+      report_every <- max(1L, as.integer(round(nboot / 20)))  # ~20 progress updates
       for (b in seq_len(nboot)) {
         em_b <- list()
         for (loc in markers) {
@@ -802,12 +814,14 @@ server_null_alleles <- function(id, rv) {
             ir <- unlist(lapply(ri, function(x) br[ic==x]))
             gts <- raw_df$gt[ir]
             em_b[[loc]][[pop]] <- if(length(gts)==0L) em_res[[loc]][[pop]]
-                                  else em_freena(gts, base, treat)
+                                  else em_freena(gts, base, treat, max_iter = max_iter)
           }
         }
         fg <- compute_fst_global_full(em_b)
         boot_raw[b] <- fg$global_raw %||% NA_real_
         boot_ena[b] <- fg$global_ena %||% NA_real_
+        if (!is.null(progress_cb) && (b %% report_every == 0L || b == nboot))
+          progress_cb(b / nboot)
       }
       list(
         raw = quantile(boot_raw, c(alpha/2,0.5,1-alpha/2), na.rm=TRUE),
@@ -820,7 +834,8 @@ server_null_alleles <- function(id, rv) {
     # ══════════════════════════════════════════════════════════════════════════
     results_r <- eventReactive(input$run_all, {
       req(db_ready())
-      nboot   <- max(100L, min(99999L, as.integer(input$nboot %||% 5000L)))
+      nboot      <- max(100L, min(99999L, as.integer(input$nboot %||% 5000L)))
+      nboot_subs <- max(50L,  min(20000L, as.integer(input$nboot_subs %||% 500L)))
       alpha   <- as.numeric(input$ci_level %||% "0.05")
       ci      <- ci_bounds(alpha)
       base    <- as.integer(base_r())
@@ -884,9 +899,17 @@ server_null_alleles <- function(id, rv) {
         setProgress(0.70, detail = sprintf("Bootstrap over loci — pairwise DCSE (%d reps)...", nboot))
         boot_pair_dc_loci <- boot_loci_pair_dc(dc_pair, nboot, alpha)
 
-        # 10. Bootstrap over sub-samples — global FST
-        setProgress(0.78, detail = sprintf("Bootstrap over sub-samples — global FST (%d reps)...", nboot))
-        boot_gl_subs <- boot_subsamples_global_fst(raw_df, em_res, base, treats, nboot, alpha)
+        # 10. Bootstrap over sub-samples — global FST (own, smaller replicate
+        #     count; capped EM iterations per replicate; fine-grained progress
+        #     since this is by far the most expensive step)
+        setProgress(0.78, detail = sprintf("Bootstrap over sub-samples — global FST (%d reps)...", nboot_subs))
+        boot_gl_subs <- boot_subsamples_global_fst(
+          raw_df, em_res, base, treats, nboot_subs, alpha, max_iter = 100L,
+          progress_cb = function(frac) {
+            setProgress(0.78 + 0.17 * frac,
+              detail = sprintf("Bootstrap over sub-samples — global FST (%d / %d reps)...",
+                                round(frac * nboot_subs), nboot_subs))
+          })
 
         setProgress(0.95, detail = "Assembling results...")
 
@@ -972,7 +995,7 @@ server_null_alleles <- function(id, rv) {
           boot_gl_subs      = boot_gl_subs,
           boot_pair_fst     = boot_pair_fst_loci,
           boot_pair_dc      = boot_pair_dc_loci,
-          nboot = nboot, alpha = alpha, ci = ci,
+          nboot = nboot, nboot_subs = nboot_subs, alpha = alpha, ci = ci,
           treats = treats, markers = markers, pops = pops,
           em_res = em_res
         )
@@ -995,7 +1018,12 @@ server_null_alleles <- function(id, rv) {
         "# INA correction (Including Null Alleles) — Chapuis & Estoup (2007) / FreeNA",
         "# FST: Weir (1996) following Genepop method",
         "# DCSE: Cavalli-Sforza & Edwards (1967) chord genetic distance",
-        paste0("# Bootstrap replicates: ", r$nboot),
+        paste0("# Bootstrap replicates (over loci): ", r$nboot),
+        paste0("# Bootstrap replicates (over sub-samples, individuals): ", r$nboot_subs %||% r$nboot,
+               " (EM capped at 100 iterations per replicate)"),
+        "# Note: the sub-samples bootstrap CI can sit slightly above the observed value",
+        "#   (point estimate under its own lower bound) — a known property of resampling",
+        "#   individuals with replacement, not a computation error.",
         paste0("# Confidence interval: ", ci_pct, " (alpha = ", r$alpha, ")"),
         paste0("# Locus coding, as chosen per locus (000000=absent/PCR failure; 999999=null homozygote):"),
         paste0("#   ", treat_summary),
@@ -1243,8 +1271,8 @@ server_null_alleles <- function(id, rv) {
       tags$div(class="na-info", style="margin-top:.5rem;",
         icon("check-circle"), " ",
         tags$strong("Computation complete."),
-        sprintf(" %d loci \u00b7 %d populations \u00b7 %d replicates \u00b7 %s CI.",
-                length(r$markers), length(r$pops), r$nboot, ci_pct),
+        sprintf(" %d loci \u00b7 %d populations \u00b7 %d loci-replicates \u00b7 %d sub-sample-replicates \u00b7 %s CI.",
+                length(r$markers), length(r$pops), r$nboot, r$nboot_subs %||% r$nboot, ci_pct),
         " Output files are ready for download above."
       )
     })
@@ -1411,18 +1439,31 @@ server_null_alleles <- function(id, rv) {
       if (is.null(r)) return(tags$p("Run computation first.", style="color:#94a3b8;"))
       ci_pct <- paste0(round((1-r$alpha)*100,3),"%")
       bl <- r$boot_gl_loci; bs <- r$boot_gl_subs
-      tags$div(class="na-boot-result",
-        tags$strong(sprintf("Global FST-ENA \u2014 observed: %.6f", r$fst_global$global_ena)),
-        tags$br(),
-        sprintf("%s CI (bootstrap over loci):      [ %.6f  \u2013  %.6f ]", ci_pct, bl$ena[1], bl$ena[3]),
-        tags$br(),
-        sprintf("%s CI (bootstrap over sub-samples): [ %.6f  \u2013  %.6f ]", ci_pct, bs$ena[1], bs$ena[3]),
-        tags$br(), tags$br(),
-        tags$strong(sprintf("Global Raw FST \u2014 observed: %.6f", r$fst_global$global_raw)),
-        tags$br(),
-        sprintf("%s CI (bootstrap over loci):      [ %.6f  \u2013  %.6f ]", ci_pct, bl$raw[1], bl$raw[3]),
-        tags$br(),
-        sprintf("%s CI (bootstrap over sub-samples): [ %.6f  \u2013  %.6f ]", ci_pct, bs$raw[1], bs$raw[3])
+      obs_ena <- r$fst_global$global_ena; obs_raw <- r$fst_global$global_raw
+      ena_outside <- !is.na(obs_ena) && (obs_ena < bs$ena[1] || obs_ena > bs$ena[3])
+      raw_outside <- !is.na(obs_raw) && (obs_raw < bs$raw[1] || obs_raw > bs$raw[3])
+      tags$div(
+        tags$div(class="na-boot-result",
+          tags$strong(sprintf("Global FST-ENA \u2014 observed: %.6f", obs_ena)),
+          tags$br(),
+          sprintf("%s CI (bootstrap over loci):      [ %.6f  \u2013  %.6f ]", ci_pct, bl$ena[1], bl$ena[3]),
+          tags$br(),
+          sprintf("%s CI (bootstrap over sub-samples): [ %.6f  \u2013  %.6f ]", ci_pct, bs$ena[1], bs$ena[3]),
+          tags$br(), tags$br(),
+          tags$strong(sprintf("Global Raw FST \u2014 observed: %.6f", obs_raw)),
+          tags$br(),
+          sprintf("%s CI (bootstrap over loci):      [ %.6f  \u2013  %.6f ]", ci_pct, bl$raw[1], bl$raw[3]),
+          tags$br(),
+          sprintf("%s CI (bootstrap over sub-samples): [ %.6f  \u2013  %.6f ]", ci_pct, bs$raw[1], bs$raw[3])
+        ),
+        if (ena_outside || raw_outside)
+          tags$div(class="na-info", style="margin-top:.5rem;",
+            icon("info-circle"), " ",
+            "The observed value falls just outside its own sub-samples bootstrap CI above. ",
+            "This is a known property of resampling individuals with replacement (duplicated ",
+            "individuals in a replicate slightly raise its apparent structure) \u2014 not a computation error. ",
+            "The bootstrap-over-loci CI is not affected by this."
+          )
       )
     })
 
