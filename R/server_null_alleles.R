@@ -962,14 +962,21 @@ server_null_alleles <- function(id, rv) {
             n_total <- as.integer(e$efpop)          # total indiv (genotyped + missing)
             n_exp   <- n_total * (e$rd^2)           # N_total * p^2
             t1_rows[[length(t1_rows)+1L]] <- data.frame(
-              Locus        = loc,
-              Population   = pop,
-              Coding       = as.character(treats[loc] %||% "absent"),
-              p_nulls      = round(e$rd, 6),
-              N            = n_total,                        # total (genotyped + missing)
-              N_blanks     = as.integer(e$n_absent + e$n_null_homo), # missing, either coding
-              N_exp_blanks = round(n_exp, 6),
-              p_nulls_x_N  = round(e$rd * n_total, 6),
+              Locus         = loc,
+              Population    = pop,
+              Coding        = as.character(treats[loc] %||% "absent"),
+              p_nulls       = round(e$rd, 6),
+              N             = n_total,                        # total (genotyped + missing)
+              N_blanks      = as.integer(e$n_absent + e$n_null_homo), # missing, either coding
+              N_exp_blanks  = round(n_exp, 6),
+              p_nulls_x_N   = round(e$rd * n_total, 6),
+              # ── diagnostics — actual values used inside em_freena() for
+              # THIS population, so any mismatch vs "Coding" above can be
+              # spotted immediately (e.g. a locus set to null_homo but this
+              # particular population had n_null_homo==0, correctly falling
+              # back to the absent formulas for that population only) ──────
+              treat_used    = as.character(e$treat %||% "absent"),
+              n_null_homo   = as.integer(e$n_null_homo %||% 0L),
               stringsAsFactors=FALSE)
           }
         }
@@ -1343,19 +1350,23 @@ server_null_alleles <- function(id, rv) {
 
     # ── Tab 1: null allele frequencies DTs ────────────────────────────────────
     # t1 columns: Locus, Population, Coding, p_nulls, N, N_blanks,
-    #             N_exp_blanks, p_nulls_x_N  — matches FreeNA's per-locus x
-    #             population report (Locus names / Farm / p_nulls / N /
-    #             N_exp_blanks / p_nulls*N), with Coding/N_blanks kept as
-    #             transparent extras reflecting your chosen coding.
+    #             N_exp_blanks, p_nulls_x_N, treat_used, n_null_homo —
+    #             matches FreeNA's per-locus x population report (Locus names
+    #             / Farm / p_nulls / N / N_exp_blanks / p_nulls*N), with
+    #             Coding/N_blanks/treat_used/n_null_homo kept as transparent
+    #             diagnostics: treat_used and n_null_homo show exactly what
+    #             em_freena() used for THIS population, so a mismatch against
+    #             the locus-level "Coding" is immediately visible.
     output$dt_t1 <- DT::renderDT({
       r <- results_r()
       shiny::validate(shiny::need(nrow(r$t1)>0, "No data yet. Click Compute."))
       d <- r$t1
       names(d) <- c("Locus","Population","Coding","p_nulls",
-                    "N","N_blanks","N_exp_blanks","p_nulls\u00d7N")
+                    "N","N_blanks","N_exp_blanks","p_nulls\u00d7N",
+                    "treat_used","n_null_homo")
       DT::datatable(d, rownames=FALSE,
         options=list(pageLength=20, scrollX=TRUE, dom="lftip",
-          columnDefs=list(list(className="dt-right", targets=3:7))),
+          columnDefs=list(list(className="dt-right", targets=3:9))),
         class="compact hover stripe") |>
         DT::formatRound("p_nulls",           6) |>
         DT::formatRound("N_exp_blanks",       6) |>
