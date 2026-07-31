@@ -3410,29 +3410,9 @@ server_general_stats <- function(id, rv) {
         n_loci <- length(loci_names)
 
         pop_codes <- as.integer(mat[, 1L])
-
-        # ── Restriction FSTAT : génotypes multi-locus COMPLETS uniquement ────────
-        # FSTAT (Goudet et al. 1996, \u00a77.1, note 1) : "Only complete multilocus
-        # genotypes are randomised, to make sure that the combined test over loci
-        # is valid." L'en-t\u00eate des fichiers FSTAT_G ("Number of complete
-        # multilocus genotypes in the different samples") confirme qu'un seul
-        # sous-ensemble FIXE d'individus (non manquants \u00e0 TOUS les loci
-        # simultan\u00e9ment) est utilis\u00e9 pour l'ensemble du test, et pas,
-        # comme pr\u00e9c\u00e9demment ici, un sous-ensemble diff\u00e9rent par locus selon
-        # ses propres donn\u00e9es manquantes (cela change \u00e0 la fois le G observ\u00e9
-        # et la distribution nulle de permutation).
-        geno_mat      <- mat[, -1L, drop = FALSE]
-        complete_mask <- rowSums(is.na(geno_mat) | geno_mat <= 0L) == 0L
-        shiny::validate(shiny::need(
-          sum(complete_mask) >= 2L,
-          "Not enough individuals with a complete multilocus genotype across all loci."
-        ))
-
-        pop_codes_complete <- pop_codes[complete_mask]
-        pops      <- sort(unique(pop_codes_complete[is.finite(pop_codes_complete) & pop_codes_complete > 0L]))
+        pops      <- sort(unique(pop_codes[is.finite(pop_codes) & pop_codes > 0L]))
         n_pops    <- length(pops)
-        pop_idx0_full <- match(pop_codes_complete, pops) - 1L   # 0-based, sous-ensemble complet
-        mat_complete  <- mat[complete_mask, , drop = FALSE]
+        pop_idx0_full <- match(pop_codes, pops) - 1L   # code 0-based, réutilisé pour la permutation
 
         # Noms de populations : source UNIQUE (attribut posé par hf_mat_r()) — plus de
         # requête DB séparée dont l'ordre alphabétique n'est pas garanti correspondre
@@ -3443,16 +3423,13 @@ server_general_stats <- function(id, rv) {
 
         # ── Décoder les génotypes et pré-calculer les index allèles (fixes, hors permutation) ──
         # gt = a1*base + a2 — identique au décodage dans ld_pvalues_cpp
-        # Tous les individus restants (mat_complete) sont, par construction,
-        # non manquants à CHAQUE locus — loci_idx est donc identique (1:n) pour
-        # tous les loci, mais on garde le même schéma générique par sécurité.
-        loci_idx      <- vector("list", n_loci)  # lignes de mat_complete valides pour ce locus
+        loci_idx      <- vector("list", n_loci)  # lignes de mat valides pour ce locus
         loci_allele0  <- vector("list", n_loci)  # code allèle 0-based, longueur 2*n_valid (fixe)
         loci_n_allele <- integer(n_loci)
         loci_n_valid  <- integer(n_loci)
 
         for (j in seq_len(n_loci)) {
-          g   <- as.integer(mat_complete[, j + 1L])
+          g   <- as.integer(mat[, j + 1L])
           ok  <- is.finite(g) & g > 0L
           a1  <- g[ok] %/% base
           a2  <- g[ok] %% base
