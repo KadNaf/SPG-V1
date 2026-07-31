@@ -399,6 +399,10 @@ server_null_alleles <- function(id, rv) {
     #  go back to the original allele columns ourselves instead of trusting
     #  whatever the import step already decided.
     # ══════════════════════════════════════════════════════════════════════════
+    # Explains, in plain text, whether raw_data_direct_r() succeeded and if
+    # not, exactly which check failed — so a silent fallback is never silent.
+    raw_source_diag <- reactiveVal("Not evaluated yet — open the \"Null allele frequencies\" tab or click Compute.")
+
     raw_data_direct_r <- reactive({
       db_ready()
       con <- con_r()
@@ -406,24 +410,39 @@ server_null_alleles <- function(id, rv) {
       has_helpers <- exists(".duckdb_get_param", mode="function", inherits=TRUE) &&
                      exists(".duckdb_get_param_json", mode="function", inherits=TRUE) &&
                      exists(".get_locus_cols_from_marker_cols", mode="function", inherits=TRUE)
-      if (!has_helpers) return(NULL)
+      if (!has_helpers) {
+        raw_source_diag("FALLBACK (hf table) — helper functions (.duckdb_get_param / .duckdb_get_param_json / .get_locus_cols_from_marker_cols) are not available in this session.")
+        return(NULL)
+      }
 
       tbl_raw <- tryCatch(.duckdb_get_param(con, "tbl_raw", default = "raw"),
                            error = function(e) "raw")
-      if (is.null(tbl_raw) || is.na(tbl_raw) || !nzchar(tbl_raw) ||
-          !isTRUE(tryCatch(DBI::dbExistsTable(con, tbl_raw), error=function(e) FALSE)))
+      if (is.null(tbl_raw) || is.na(tbl_raw) || !nzchar(tbl_raw)) {
+        raw_source_diag(sprintf("FALLBACK (hf table) — 'tbl_raw' parameter missing or empty (got: %s).",
+                                 if (is.null(tbl_raw)) "NULL" else as.character(tbl_raw)))
         return(NULL)
+      }
+      if (!isTRUE(tryCatch(DBI::dbExistsTable(con, tbl_raw), error = function(e) FALSE))) {
+        raw_source_diag(sprintf("FALLBACK (hf table) — raw table '%s' does not exist in DuckDB.", tbl_raw))
+        return(NULL)
+      }
 
       marker_cols_raw <- tryCatch(.duckdb_get_param_json(con, "marker_cols_raw"),
                                    error = function(e) character(0))
-      if (!length(marker_cols_raw)) return(NULL)
+      if (!length(marker_cols_raw)) {
+        raw_source_diag("FALLBACK (hf table) — 'marker_cols_raw' parameter missing/empty in DuckDB params table (this import may predate that setting).")
+        return(NULL)
+      }
 
       base <- suppressWarnings(as.integer(.duckdb_get_param(con, "base", default = NA)))
       if (!is.finite(base) || base <= 0L) base <- as.integer(base_r())
 
       loci <- tryCatch(.get_locus_cols_from_marker_cols(marker_cols_raw),
                         error = function(e) character(0))
-      if (!length(loci)) return(NULL)
+      if (!length(loci)) {
+        raw_source_diag("FALLBACK (hf table) — could not derive locus names from 'marker_cols_raw'.")
+        return(NULL)
+      }
 
       ms <- meta_schema_r()
       tbl_meta <- tbl_meta_r()
@@ -439,11 +458,12 @@ server_null_alleles <- function(id, rv) {
       mi_q     <- sql_id(con, ms$ind_col)
       pop_q    <- sql_id(con, ms$pop_col)
 
-      parts <- character(0)
+      parts        <- character(0)
+      unpaired_loci <- character(0)
       for (loc in loci) {
         if (!(loc %in% marker_cols_raw)) next
         b_col <- pick_b(loc, marker_cols_raw)
-        if (is.na(b_col)) next
+        if (is.na(b_col)) { unpaired_loci <- c(unpaired_loci, loc); next }
         a_ident  <- sql_id(con, loc)
         b_ident  <- sql_id(con, b_col)
         loc_str  <- sql_str(con, loc)
@@ -468,16 +488,30 @@ server_null_alleles <- function(id, rv) {
           mi_q, pop_q, loc_str, as.integer(base), a_ident, b_ident,
           raw_sql, meta_sql, mi_q, pop_q))
       }
-      if (!length(parts)) return(NULL)
+      if (!length(parts)) {
+        raw_source_diag(sprintf("FALLBACK (hf table) — no locus could be paired from 'marker_cols_raw' (unpaired: %s).",
+                                 paste(unpaired_loci, collapse=", ")))
+        return(NULL)
+      }
 
+      err_msg <- NULL
       out <- tryCatch(
         DBI::dbGetQuery(con, paste(parts, collapse = "\nUNION ALL\n")),
-        error = function(e) NULL)
-      if (is.null(out) || !nrow(out)) return(NULL)
+        error = function(e) { err_msg <<- conditionMessage(e); NULL })
+      if (is.null(out) || !nrow(out)) {
+        raw_source_diag(sprintf("FALLBACK (hf table) — direct query against '%s' returned no rows or errored: %s",
+                                 tbl_raw, err_msg %||% "(no error message; empty result)"))
+        return(NULL)
+      }
 
       mk <- tryCatch(markers_r(), error = function(e) NULL)
       if (!is.null(mk) && length(mk))
         out <- out[order(match(out$Marker, mk), out$Population, out$Individual), ]
+
+      raw_source_diag(sprintf(
+        "DIRECT (raw table) — read %d rows straight from '%s' for %d loci (bypassing hf).%s",
+        nrow(out), tbl_raw, length(loci),
+        if (length(unpaired_loci)) sprintf(" NOTE: could not pair %s.", paste(unpaired_loci, collapse=", ")) else ""))
       out
     })
 
@@ -510,6 +544,15 @@ server_null_alleles <- function(id, rv) {
         locus_order_cte(con,hf_q,hl_q),
         pop_q, sql_id(con,ms$ind_col), hl_q, hg_q,
         hf_q, meta_q, hi_q, mi_q, hl_q, pop_q))
+    })
+
+    output$ui_genotype_source <- renderUI({
+      tryCatch(raw_data_r(), error = function(e) NULL)  # force evaluation of the diagnostic
+      msg <- tryCatch(raw_source_diag(), error = function(e) "Not evaluated yet.")
+      ok  <- grepl("^DIRECT", msg)
+      tags$div(class = if (ok) "na-info" else "na-warn",
+        icon(if (ok) "database" else "exclamation-triangle"), " ",
+        tags$strong("Genotype source: "), msg)
     })
 
     em_results_r <- reactive({
