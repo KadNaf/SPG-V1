@@ -700,12 +700,33 @@ reset_downstream_state <- function(rv) {
 
   DBI::dbExecute(con, sprintf("DROP TABLE IF EXISTS %s;", .sql_ident(tbl_raw)))
 
-  # ── Pré-traitement : normalisation encodage + en-têtes dupliqués ──────────
-  raw_lines <- tryCatch(
-    readLines(file_path, encoding = "UTF-8",   warn = FALSE),
-    error = function(e)
-      readLines(file_path, encoding = "latin1", warn = FALSE)
-  )
+  # ── Pré-traitement : détection FIABLE de l'encodage + en-têtes dupliqués ──
+  # BUG CORRIGÉ : readLines(..., encoding = "UTF-8") ne VALIDE PAS le contenu ;
+  # elle ne lève (quasiment) jamais d'erreur sur des octets UTF-8 invalides
+  # (ex. 0xE9 seul, typique des fichiers Latin-1 / Windows-1252 exportés
+  # depuis Excel ou FSTAT sous Windows, comme les noms de population
+  # accentués, "Bakolé", etc.). Le tryCatch précédent ne se déclenchait donc
+  # (presque) jamais : le fichier était relu comme "UTF-8" avec des octets
+  # invalides, puis DuckDB (ignore_errors = TRUE plus bas) supprimait
+  # SILENCIEUSEMENT toute ligne qu'il ne pouvait pas parser — typiquement une
+  # population entière — sans aucun avertissement pour l'utilisateur.
+  #
+  # On teste donc explicitement la validité UTF-8 sur les OCTETS BRUTS avant
+  # toute lecture, et on convertit proprement (Latin-1 -> UTF-8) si besoin.
+  raw_bytes     <- readBin(file_path, what = "raw", n = file.info(file_path)$size)
+  is_valid_utf8 <- tryCatch(validUTF8(rawToChar(raw_bytes, multiple = FALSE)),
+                            error = function(e) FALSE)
+
+  raw_lines <- if (isTRUE(is_valid_utf8)) {
+    readLines(file_path, encoding = "UTF-8", warn = FALSE)
+  } else {
+    # Latin-1 / Windows-1252 : le cas le plus fréquent pour des fichiers de
+    # génétique des populations produits sous Windows. On lit tel quel, puis
+    # on convertit explicitement vers UTF-8 (au lieu de laisser passer des
+    # octets invalides qui feront tomber DuckDB en silence plus bas).
+    lines_latin1 <- readLines(file_path, encoding = "latin1", warn = FALSE)
+    iconv(lines_latin1, from = "latin1", to = "UTF-8", sub = "byte")
+  }
 
   if (isTRUE(header) && length(raw_lines) >= 1L) {
     raw_header   <- strsplit(raw_lines[1L], sep, fixed = TRUE)[[1L]]
@@ -715,10 +736,14 @@ reset_downstream_state <- function(rv) {
     }
   }
 
+  n_data_lines <- length(raw_lines) - if (isTRUE(header)) 1L else 0L
+
   tmp_file <- tempfile(fileext = ".txt")
   on.exit(unlink(tmp_file), add = TRUE)
-  # Écrire en UTF-8 : DuckDB lit toujours en UTF-8
-  writeLines(raw_lines, tmp_file, useBytes = FALSE)
+  # useBytes = TRUE : les lignes sont déjà proprement encodées en UTF-8
+  # ci-dessus ; on écrit les octets tels quels sans laisser R réinterpréter/
+  # re-corrompre l'encodage déclaré de chaque chaîne.
+  writeLines(raw_lines, tmp_file, useBytes = TRUE)
   # ── Fin pré-traitement ────────────────────────────────────────────────────
 
   q_file <- DBI::dbQuoteString(con, normalizePath(tmp_file, winslash = "/"))
@@ -747,6 +772,27 @@ reset_downstream_state <- function(rv) {
       DBI::dbExecute(con, sql_fallback)
     }
   )
+
+  # ── Garde-fou : ignore_errors = TRUE fait taire DuckDB sur toute ligne
+  # illisible (encodage résiduel, colonnes mal formées, etc.) — c'est
+  # exactement ce qui a fait disparaître "Bakolé" sans avertissement. On
+  # vérifie donc après coup qu'aucune ligne n'a été perdue silencieusement,
+  # et on alerte l'utilisateur sinon.
+  n_imported <- tryCatch(
+    DBI::dbGetQuery(con, sprintf("SELECT COUNT(*) AS n FROM %s;", .sql_ident(tbl_raw)))$n[[1]],
+    error = function(e) NA_integer_
+  )
+  if (is.finite(n_imported) && is.finite(n_data_lines) && n_imported < n_data_lines) {
+    msg <- sprintf(
+      "DuckDB a ignor\u00e9 silencieusement %d ligne(s) sur %d lors de l'import (encodage/format illisible) \u2014 v\u00e9rifiez le fichier source.",
+      n_data_lines - n_imported, n_data_lines
+    )
+    warning(msg, call. = FALSE)
+    if (requireNamespace("shiny", quietly = TRUE) && isTRUE(shiny::isRunning())) {
+      shiny::showNotification(msg, type = "error", duration = NULL)
+    }
+  }
+
   TRUE
 }
 
