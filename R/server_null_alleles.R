@@ -144,31 +144,51 @@ server_null_alleles <- function(id, rv) {
     })
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  MISSING-GENOTYPE CODING — read straight off the EM results themselves.
-    #  em_freena() (below) already determines, per (locus, population), whether
-    #  that population's blanks are coded "999999" (null homozygote) or
-    #  "000000" (absent/PCR failure) — this is the ONLY place that decision is
-    #  made, so every other part of the app (badges, Recoded_blanks, exports)
-    #  reads it back from em_results_r() rather than re-deriving it separately.
-    #  A locus is reported as "null_homo" if ANY of its populations used that
-    #  coding.
+    #  MISSING-GENOTYPE CODING — USER CHOICE per locus, exactly as in FreeNA's
+    #  own Pascal source (FreeNA_optm2R.pas): a genotype "0 0" is always read
+    #  as "missing complete" (excluded from allele-frequency estimation), and
+    #  a genotype "99 99"/"999 999" is always read as the null-homozygote
+    #  allele state (included as evidence for the null allele) — that part is
+    #  purely data-driven and never changes.
+    #  What DOES need a choice is which EM formula to apply to a locus's
+    #  blanks: treat them as pure PCR failure ("absent") or as informative
+    #  null homozygotes ("null_homo"). We suggest a default per locus (based
+    #  on what your data actually contains), but you have the final say via
+    #  the radio buttons below — this avoids ever silently mis-classifying a
+    #  locus.
     # ══════════════════════════════════════════════════════════════════════════
+    treat_id  <- function(loc) paste0("coding_", gsub("[^A-Za-z0-9]", "_", loc))
     recode_id <- function(loc) paste0("recode_", gsub("[^A-Za-z0-9]", "_", loc))
 
-    locus_treatments_r <- reactive({
+    # Suggestion only — derived from the data itself (does any population at
+    # this locus actually contain a literal 999999/999999-style genotype?).
+    locus_autodetect_r <- reactive({
       em_res  <- em_results_r()
       markers <- markers_r()
       treats <- sapply(markers, function(loc) {
         ee <- em_res[[loc]]
         if (length(ee) &&
-            any(vapply(ee, function(e) identical(e$treat, "null_homo"), logical(1))))
+            any(vapply(ee, function(e) isTRUE(e$n_null_homo > 0L), logical(1))))
           "null_homo" else "absent"
       })
       stats::setNames(treats, markers)
     })
 
+    # The value actually used everywhere downstream: the user's radio-button
+    # choice, falling back to the auto-detected suggestion until they pick one.
+    locus_treatments_r <- reactive({
+      markers <- markers_r()
+      suggested <- tryCatch(locus_autodetect_r(), error = function(e) NULL)
+      treats <- sapply(markers, function(loc) {
+        val <- input[[treat_id(loc)]]
+        if (!is.null(val) && val %in% c("null_homo","absent")) return(val)
+        if (!is.null(suggested) && loc %in% names(suggested)) suggested[[loc]] else "absent"
+      })
+      stats::setNames(treats, markers)
+    })
+
     # Single-digit code reported in the "Recoded_blanks" column (999 or 0),
-    # mirroring FreeNA's own report.
+    # mirroring FreeNA's own report — follows the user's chosen coding.
     locus_recoded_blanks_r <- reactive({
       base      <- as.integer(base_r())
       null_code <- if (base >= 1000L) 999L else 99L
@@ -189,23 +209,31 @@ server_null_alleles <- function(id, rv) {
         markers)
     })
 
-    # ── Per-locus coding display — read-only badges + optional recode flag ────
+    # ── Per-locus coding UI — radio buttons, pre-selected from auto-detection ──
     output$locus_coding_ui <- renderUI({
       ns_fn   <- session$ns
       markers <- markers_r()
       if (length(markers) == 0L) return(tags$p("No markers loaded yet."))
-      treats  <- tryCatch(locus_treatments_r(),      error = function(e) NULL)
-      recoded <- tryCatch(locus_recoded_blanks_r(),  error = function(e) NULL)
+      suggested <- tryCatch(locus_autodetect_r(), error = function(e) NULL)
       items <- lapply(markers, function(loc) {
-        cd    <- if (!is.null(treats))  treats[[loc]]  else "absent"
-        rcode <- if (!is.null(recoded)) recoded[[loc]] else 0L
-        badge_txt <- if (identical(cd, "null_homo"))
-          sprintf("Detected coding: %d%d — null homozygote", rcode, rcode)
-        else
-          "Detected coding: 000000 — absent / PCR failure"
+        sugg <- if (!is.null(suggested) && loc %in% names(suggested))
+          suggested[[loc]] else "absent"
+        hint_txt <- sprintf("Suggestion based on your data: %s",
+          if (identical(sugg, "null_homo")) "999999 (null homozygote)"
+          else "000000 (absent / PCR failure)")
         tags$div(class = "na-locus-item",
           tags$div(class = "na-locus-name", loc),
-          tags$div(style = "font-size:11px;color:#475569;margin:2px 0 5px;", badge_txt),
+          tags$div(style = "font-size:10.5px;color:#64748b;margin-bottom:3px;", hint_txt),
+          radioButtons(
+            inputId  = ns_fn(treat_id(loc)),
+            label    = NULL,
+            choices  = c(
+              "000000 — absent / PCR failure" = "absent",
+              "999999 — null homozygote"      = "null_homo"
+            ),
+            selected = sugg,
+            inline   = TRUE
+          ),
           checkboxInput(
             inputId = ns_fn(recode_id(loc)),
             label   = "Flag for recoding sensitivity check",
@@ -217,18 +245,19 @@ server_null_alleles <- function(id, rv) {
 
     # ══════════════════════════════════════════════════════════════════════════
     #  EM ALGORITHM — exact translation of rDempster_per_locus (Pascal FreeNA)
-    #  The coding convention (000000 = absent/PCR failure vs 999999 = null
-    #  homozygote) is now detected INTERNALLY, from n_null_homo itself, for
-    #  each (locus, population) — this is the single source of truth used
-    #  both for the EM formulas and for anything the app reports afterwards
-    #  (Coding / Recoded_blanks / badges). This guarantees that the formula
-    #  actually used always matches what the data really contains — a
-    #  separate, external "which coding does this locus use?" pre-check can
-    #  never fall out of sync with it.
-    #  The `treat` argument is kept for backward-compatible call sites but is
-    #  IGNORED: it is always recomputed from the data.
+    #  n_null_homo (how many individuals carry a literal 99/999-per-allele
+    #  genotype) is ALWAYS computed straight from the data, exactly like
+    #  FreeNA_optm2R.pas does when reading genotypes — this never depends on
+    #  any setting and is always correct.
+    #  `treat` is the USER'S CHOICE (per locus, from the radio buttons) for
+    #  which EM formula to apply to that locus's blanks:
+    #    "absent"    — treat blanks as uninformative PCR failure (000000)
+    #    "null_homo" — treat blanks as informative null homozygotes (999999)
+    #  If the user picks "null_homo" for a locus that has no literal
+    #  null-homozygote genotypes in the data (n_null_homo == 0), we fall back
+    #  to the "absent" formulas — there is nothing to treat as informative.
     # ══════════════════════════════════════════════════════════════════════════
-    em_freena <- function(gt_vec, base, treat = NULL) {
+    em_freena <- function(gt_vec, base, treat = "absent") {
       efpop      <- length(gt_vec)
       absent_msk <- is.na(gt_vec) | gt_vec <= 0L
       n_absent   <- sum(absent_msk)
@@ -247,9 +276,10 @@ server_null_alleles <- function(id, rv) {
       null_homo_msk <- (a1_all == null_code) & (a2_all == null_code)
       n_null_homo   <- sum(null_homo_msk)
 
-      # SELF-DETECTED coding — the only thing that decides which formula is
-      # used below. Never trust an externally-passed treat value.
-      treat <- if (n_null_homo > 0L) "null_homo" else "absent"
+      # Effective treat actually applied: honour the user's choice, but only
+      # if there is something to treat as informative.
+      treat <- if (identical(treat, "null_homo") && n_null_homo > 0L)
+        "null_homo" else "absent"
 
       valid_a1 <- a1_all[!null_homo_msk]
       valid_a2 <- a2_all[!null_homo_msk]
@@ -842,11 +872,12 @@ server_null_alleles <- function(id, rv) {
     # ══════════════════════════════════════════════════════════════════════════
     results_r <- eventReactive(input$run_all, {
       req(db_ready())
-      nboot  <- max(100L, min(99999L, as.integer(input$nboot %||% 5000L)))
-      alpha  <- as.numeric(input$ci_level %||% "0.05")
-      ci     <- ci_bounds(alpha)
-      base   <- as.integer(base_r())
+      nboot   <- max(100L, min(99999L, as.integer(input$nboot %||% 5000L)))
+      alpha   <- as.numeric(input$ci_level %||% "0.05")
+      ci      <- ci_bounds(alpha)
+      base    <- as.integer(base_r())
       markers <- markers_r(); pops <- pops_r()
+      treats  <- locus_treatments_r()   # user's per-locus coding choice
 
       withProgress(message = "Running computations...", value = 0, {
 
@@ -855,13 +886,16 @@ server_null_alleles <- function(id, rv) {
         raw_df <- raw_data_r()
         shiny::validate(shiny::need(nrow(raw_df)>0, "No genotype data found."))
 
-        # 2. EM per locus x population — coding (000000 vs 999999) is
-        #    self-detected inside em_freena() from n_null_homo; we read it
-        #    back afterwards (below) instead of guessing it beforehand.
+        # 2. EM per locus x population — applies the user's chosen coding
+        #    (000000 vs 999999) per locus; em_freena() always counts
+        #    n_null_homo straight from the data regardless of this choice,
+        #    and falls back to the "absent" formulas if a locus has no
+        #    literal null-homozygote genotypes to treat as informative.
         setProgress(0.08, detail = "EM algorithm (null allele frequencies)...")
         em_res <- list()
         for (loc in markers) {
           em_res[[loc]] <- list()
+          treat <- as.character(treats[loc] %||% "absent")
           for (pop in pops) {
             gts <- raw_df$gt[raw_df$Marker==loc & raw_df$Population==pop]
             em_res[[loc]][[pop]] <-
@@ -870,19 +904,9 @@ server_null_alleles <- function(id, rv) {
                      H_ii=numeric(0),H_iX=numeric(0),N=0L,efpop=0L,
                      n_absent=0L,n_null_homo=0L,alleles=integer(0),
                      n_valid_geno=0L,treat="absent")
-              else em_freena(gts, base)
+              else em_freena(gts, base, treat)
           }
         }
-
-        # Per-locus coding, read straight back off what em_freena actually
-        # detected and used above (single source of truth — see
-        # locus_treatments_r() for the same logic applied to em_results_r()).
-        treats <- stats::setNames(sapply(markers, function(loc) {
-          ee <- em_res[[loc]]
-          if (length(ee) &&
-              any(vapply(ee, function(e) identical(e$treat, "null_homo"), logical(1))))
-            "null_homo" else "absent"
-        }), markers)
 
         # 3. Global FST (with per-locus accumulators)
         setProgress(0.15, detail = "Global FST and FST-ENA...")
@@ -925,8 +949,8 @@ server_null_alleles <- function(id, rv) {
         #  p_nulls_x_N  = N * p_nulls           (expected count of null allele copies)
         #  N_blanks     = n_absent + n_null_homo (missing genotypes, whichever coding
         #                 convention — 000000 or 999999 — this locus uses)
-        #  Coding / Recoded_blanks are auto-detected from the data (see
-        #  locus_treatments_r() / locus_recoded_blanks_r() above)
+        #  Coding / Recoded_blanks reflect the user's chosen coding per locus
+        #  (see locus_treatments_r() / locus_recoded_blanks_r() above)
         # ══════════════════════════════════════════════════════════════════════
         recoded_blanks <- locus_recoded_blanks_r()
         recode_flags   <- locus_recode_flags_r()
@@ -1025,7 +1049,7 @@ server_null_alleles <- function(id, rv) {
         "# DCSE: Cavalli-Sforza & Edwards (1967) chord genetic distance",
         paste0("# Bootstrap replicates: ", r$nboot),
         paste0("# Confidence interval: ", ci_pct, " (alpha = ", r$alpha, ")"),
-        paste0("# Locus coding, auto-detected from data (000000=absent/PCR failure; 999999=null homozygote):"),
+        paste0("# Locus coding, as chosen per locus (000000=absent/PCR failure; 999999=null homozygote):"),
         paste0("#   ", treat_summary),
         "#"
       )
@@ -1322,7 +1346,7 @@ server_null_alleles <- function(id, rv) {
     #             N_exp_blanks, p_nulls_x_N  — matches FreeNA's per-locus x
     #             population report (Locus names / Farm / p_nulls / N /
     #             N_exp_blanks / p_nulls*N), with Coding/N_blanks kept as
-    #             transparent, auto-detected extras.
+    #             transparent extras reflecting your chosen coding.
     output$dt_t1 <- DT::renderDT({
       r <- results_r()
       shiny::validate(shiny::need(nrow(r$t1)>0, "No data yet. Click Compute."))

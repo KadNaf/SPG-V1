@@ -187,20 +187,23 @@ null_alleles_UI <- function(id) {
           icon("sliders-h"), " Setup — 3 parameters to configure")),
       tags$div(class="na-panel-body",
 
-        # ── (1) Missing genotype coding per locus (auto-detected) ───────────
-        tags$div(class="na-info",
-          icon("info-circle"), " ",
-          tags$strong("(1) Missing genotype coding per locus — detected automatically"),
+        # ── (1) Missing genotype coding per locus (your choice, suggested) ──
+        tags$div(class="na-warn",
+          icon("exclamation-triangle"), " ",
+          tags$strong("(1) Missing genotype coding per locus — your choice"),
           tags$br(),
           tags$span(style="font-size:11px;",
-            "Each locus's coding is read directly from your data, exactly as FreeNA would: ",
-            tags$strong("000000"), " (absent / PCR failure) if blanks are coded as zero, or ",
-            tags$strong("999999"), " (null homozygote) if any individual carries that exact genotype at the locus.",
+            "For each locus, choose how its blanks should enter the EM algorithm: ",
+            tags$strong("000000"), " — treat blanks as uninformative absent / PCR failure, or ",
+            tags$strong("999999"), " — treat blanks as informative null homozygotes.",
             tags$br(),
-            "No manual choice is needed. If you want to test what happens under the alternative coding for a ",
-            "specific locus, tick its ", tags$strong("\"Flag for recoding sensitivity check\""),
-            " box below — this is recorded as the ", tags$code("Recode"), " column in the exports, ",
-            "for your own reference, and does not change the computation."
+            "A suggestion is pre-selected for each locus based on what your data actually contains ",
+            "(does it carry a literal 999999-style genotype anywhere for that locus?), but the final ",
+            "choice is always yours — pick the other option if you know better for a given locus.",
+            tags$br(),
+            "Tick ", tags$strong("\"Flag for recoding sensitivity check\""),
+            " to mark a locus for your own reference (exported as the ", tags$code("Recode"),
+            " column) — this does not change the computation."
           )
         ),
         uiOutput(ns("locus_coding_ui")),
@@ -343,7 +346,7 @@ null_alleles_UI <- function(id) {
           "Reproduces FreeNA's own null-allele-frequency report: the EM algorithm ",
           "(Dempster, Laird & Rubin 1977) estimated per locus \u00d7 population below, ",
           "and the N-weighted per-locus summary (Av(p_nulls), Av(N_exp_blanks), ",
-          "f(expBlanks), one-sided binomial test p-value, and detected blank coding) further down."
+          "f(expBlanks), one-sided binomial test p-value, and chosen blank coding) further down."
         ),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
