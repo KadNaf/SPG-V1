@@ -187,15 +187,20 @@ null_alleles_UI <- function(id) {
           icon("sliders-h"), " Setup — 3 parameters to configure")),
       tags$div(class="na-panel-body",
 
-        # ── (1) Missing genotype coding per locus (radio buttons) ───────────
-        tags$div(class="na-warn",
-          icon("exclamation-triangle"), " ",
-          tags$strong("(1) Missing genotype coding per locus"),
+        # ── (1) Missing genotype coding per locus (auto-detected) ───────────
+        tags$div(class="na-info",
+          icon("info-circle"), " ",
+          tags$strong("(1) Missing genotype coding per locus — detected automatically"),
           tags$br(),
           tags$span(style="font-size:11px;",
-            tags$strong("000000"), " — missing coded as absent / PCR failure (recommended default — Chapuis & Estoup 2007).",
+            "Each locus's coding is read directly from your data, exactly as FreeNA would: ",
+            tags$strong("000000"), " (absent / PCR failure) if blanks are coded as zero, or ",
+            tags$strong("999999"), " (null homozygote) if any individual carries that exact genotype at the locus.",
             tags$br(),
-            tags$strong("999999"), " — missing coded as null homozygote (only if your Genepop file uses this convention)."
+            "No manual choice is needed. If you want to test what happens under the alternative coding for a ",
+            "specific locus, tick its ", tags$strong("\"Flag for recoding sensitivity check\""),
+            " box below — this is recorded as the ", tags$code("Recode"), " column in the exports, ",
+            "for your own reference, and does not change the computation."
           )
         ),
         uiOutput(ns("locus_coding_ui")),
@@ -333,6 +338,13 @@ null_alleles_UI <- function(id) {
       # ── TAB 1: Null allele frequencies ────────────────────────────────── #
       tabPanel(title = tagList(icon("dna"), " Null allele frequencies"),
                value = "tab_na", br(),
+        tags$div(class="na-info",
+          icon("info-circle"), " ",
+          "Reproduces FreeNA's own null-allele-frequency report: the EM algorithm ",
+          "(Dempster, Laird & Rubin 1977) estimated per locus \u00d7 population below, ",
+          "and the N-weighted per-locus summary (Av(p_nulls), Av(N_exp_blanks), ",
+          "f(expBlanks), one-sided binomial test p-value, and detected blank coding) further down."
+        ),
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
@@ -343,7 +355,7 @@ null_alleles_UI <- function(id) {
         tags$div(class="na-panel",
           tags$div(class="na-panel-head",
             tags$div(class="na-panel-title",
-              icon("globe"), " Global summary per locus (N-weighted mean)")),
+              icon("globe"), " Per-locus summary (N-weighted mean, FreeNA report format)")),
           tags$div(class="na-panel-body",
             DT::DTOutput(ns("dt_t2"))))
       ),

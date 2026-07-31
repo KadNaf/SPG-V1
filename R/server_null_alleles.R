@@ -143,36 +143,75 @@ server_null_alleles <- function(id, rv) {
       updateSelectInput(session,"fl_pop2", choices=c("All pairs"="all",stats::setNames(pops,pops)),selected="all")
     })
 
-    # ── Per-locus coding UI — radio buttons, default = absent (000000) ─────────
+    # ══════════════════════════════════════════════════════════════════════════
+    #  MISSING-GENOTYPE CODING — AUTO-DETECTED per locus, exactly as FreeNA reads
+    #  its .gen input: a locus is coded "999999" (null homozygote) if ANY
+    #  individual carries that exact genotype at that locus; otherwise it is
+    #  coded "000000" (absent / PCR failure). This removes the need for a
+    #  manual per-locus choice — the coding is a property of the input file,
+    #  not a modelling decision made in the app.
+    # ══════════════════════════════════════════════════════════════════════════
+    recode_id <- function(loc) paste0("recode_", gsub("[^A-Za-z0-9]", "_", loc))
+
+    locus_treatments_r <- reactive({
+      raw     <- raw_data_r()
+      base    <- as.integer(base_r())
+      markers <- markers_r()
+      null_code <- if (base >= 1000L) 999L else 99L
+      null_gt   <- null_code * base + null_code
+      treats <- sapply(markers, function(loc) {
+        gtl <- raw$gt[raw$Marker == loc]
+        if (length(gtl) && any(gtl == null_gt, na.rm = TRUE)) "null_homo" else "absent"
+      })
+      stats::setNames(treats, markers)
+    })
+
+    # Single-digit code reported in the "Recoded_blanks" column (999 or 0),
+    # mirroring FreeNA's own report.
+    locus_recoded_blanks_r <- reactive({
+      base      <- as.integer(base_r())
+      null_code <- if (base >= 1000L) 999L else 99L
+      treats    <- locus_treatments_r()
+      stats::setNames(
+        ifelse(treats == "null_homo", null_code, 0L),
+        names(treats))
+    })
+
+    # Optional, user-set flag per locus — lets the user mark a locus for a
+    # recoding sensitivity check (exported as "Recode" = 0 when flagged,
+    # blank otherwise). Purely an annotation; it does not change the EM
+    # computation itself.
+    locus_recode_flags_r <- reactive({
+      markers <- markers_r()
+      stats::setNames(
+        sapply(markers, function(loc) isTRUE(input[[recode_id(loc)]])),
+        markers)
+    })
+
+    # ── Per-locus coding display — read-only badges + optional recode flag ────
     output$locus_coding_ui <- renderUI({
       ns_fn   <- session$ns
       markers <- markers_r()
       if (length(markers) == 0L) return(tags$p("No markers loaded yet."))
+      treats  <- tryCatch(locus_treatments_r(),      error = function(e) NULL)
+      recoded <- tryCatch(locus_recoded_blanks_r(),  error = function(e) NULL)
       items <- lapply(markers, function(loc) {
+        cd    <- if (!is.null(treats))  treats[[loc]]  else "absent"
+        rcode <- if (!is.null(recoded)) recoded[[loc]] else 0L
+        badge_txt <- if (identical(cd, "null_homo"))
+          sprintf("Detected coding: %d%d — null homozygote", rcode, rcode)
+        else
+          "Detected coding: 000000 — absent / PCR failure"
         tags$div(class = "na-locus-item",
           tags$div(class = "na-locus-name", loc),
-          radioButtons(
-            inputId  = ns_fn(treat_id(loc)),
-            label    = NULL,
-            choices  = c(
-              "000000 — absent / PCR failure" = "absent",
-              "999999 — null homozygote"      = "null_homo"
-            ),
-            selected = "absent",   # default = 000000 per Chapuis & Estoup (2007)
-            inline   = TRUE
-          )
+          tags$div(style = "font-size:11px;color:#475569;margin:2px 0 5px;", badge_txt),
+          checkboxInput(
+            inputId = ns_fn(recode_id(loc)),
+            label   = "Flag for recoding sensitivity check",
+            value   = FALSE)
         )
       })
       tags$div(class = "na-locus-grid", items)
-    })
-
-    locus_treatments_r <- reactive({
-      markers <- markers_r()
-      treats  <- sapply(markers, function(loc) {
-        val <- input[[treat_id(loc)]]
-        if (is.null(val) || !val %in% c("null_homo","absent")) "absent" else val
-      })
-      stats::setNames(treats, markers)
     })
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -854,11 +893,19 @@ server_null_alleles <- function(id, rv) {
 
         setProgress(0.95, detail = "Assembling results...")
 
-        # p_nulls tables
-        # N = efpop = total individuals (genotyped + missing), as per FreeNA
-        # N_exp_blanks = efpop * p_nulls^2 (expected null homozygotes)
-        # p_nulls_x_N  = efpop * p_nulls   (expected null allele copies)
-        # N_absent     = number of missing genotypes in this pop x locus
+        # ══════════════════════════════════════════════════════════════════════
+        #  p_nulls TABLES — reproduces FreeNA's own null-allele-frequency report
+        #  N            = efpop  (total individuals: genotyped + missing), per FreeNA
+        #  N_exp_blanks = N * p_nulls^2         (expected count of null homozygotes)
+        #  p_nulls_x_N  = N * p_nulls           (expected count of null allele copies)
+        #  N_blanks     = n_absent + n_null_homo (missing genotypes, whichever coding
+        #                 convention — 000000 or 999999 — this locus uses)
+        #  Coding / Recoded_blanks are auto-detected from the data (see
+        #  locus_treatments_r() / locus_recoded_blanks_r() above)
+        # ══════════════════════════════════════════════════════════════════════
+        recoded_blanks <- locus_recoded_blanks_r()
+        recode_flags   <- locus_recode_flags_r()
+
         t1_rows <- list()
         for (loc in markers) {
           for (pop in pops) {
@@ -870,10 +917,10 @@ server_null_alleles <- function(id, rv) {
               Population   = pop,
               Coding       = as.character(treats[loc] %||% "absent"),
               p_nulls      = round(e$rd, 6),
-              N            = n_total,               # FIX: total (genotyped + missing)
-              N_absent     = as.integer(e$n_absent),# missing genotypes
-              N_exp_blanks = round(n_exp, 6),        # FIX: uses efpop
-              p_nulls_x_N  = round(e$rd * n_total, 6), # FIX: uses efpop
+              N            = n_total,                        # total (genotyped + missing)
+              N_blanks     = as.integer(e$n_absent + e$n_null_homo), # missing, either coding
+              N_exp_blanks = round(n_exp, 6),
+              p_nulls_x_N  = round(e$rd * n_total, 6),
               stringsAsFactors=FALSE)
           }
         }
@@ -882,24 +929,36 @@ server_null_alleles <- function(id, rv) {
         t1 <- t1[order(t1$Locus, t1$Population),]
         t1$Locus <- as.character(t1$Locus)
 
-        # Global weighted mean per locus — uses N = efpop
+        # Per-locus summary — N-weighted mean, exactly as FreeNA reports it,
+        # plus a one-sided binomial test (P[X <= N_blanks] with size = N_tot,
+        # prob = Av(N_exp_blanks)/N_tot), rounded to 3 decimals as FreeNA does.
+        # Recoded_blanks reports the coding actually found in the data (999 or
+        # 0); Recode is the user's optional sensitivity-check flag (0 = flagged,
+        # blank = not flagged).
         t2_rows <- lapply(markers, function(loc) {
-          sub  <- t1[t1$Locus==loc,,drop=FALSE]
-          vidx <- !is.na(sub$p_nulls)
+          sub      <- t1[t1$Locus==loc,,drop=FALSE]
+          vidx     <- !is.na(sub$p_nulls)
           n_tot    <- sum(sub$N)                    # sum of efpop across pops
-          n_blanks <- sum(sub$N_absent)             # total missing genotypes
-          av_p  <- if (any(vidx)&&sum(sub$N[vidx])>0)
+          n_blanks <- sum(sub$N_blanks)              # total missing genotypes
+          av_p     <- if (any(vidx)&&sum(sub$N[vidx])>0)
             sum(sub$p_nulls[vidx]*sub$N[vidx]) / sum(sub$N[vidx]) else NA_real_
-          av_n  <- sum(sub$N*(sub$p_nulls^2), na.rm=TRUE) # Av(N_exp_blanks)
-          f_exp <- if (!is.na(av_n)&&n_tot>0) av_n/n_tot else NA_real_
+          av_nexp  <- sum(sub$N*(sub$p_nulls^2), na.rm=TRUE) # Av(N_exp_blanks)
+          f_exp    <- if (!is.na(av_nexp)&&n_tot>0) av_nexp/n_tot else NA_real_
+          prob     <- if (!is.na(av_nexp)&&n_tot>0) av_nexp/n_tot else NA_real_
+          pval     <- if (!is.na(prob))
+            round(stats::pbinom(n_blanks, size = n_tot, prob = prob), 3) else NA_real_
           data.frame(
-            Locus        = loc,
-            Coding       = as.character(treats[loc] %||% "absent"),
-            Av_p_nulls   = round(av_p,  6),
-            Av_N_exp     = round(av_n,  6),
-            N_tot        = n_tot,
-            N_blanks     = n_blanks,
-            f_expBlanks  = round(f_exp, 6),
+            Locus          = loc,
+            Coding         = as.character(treats[loc] %||% "absent"),
+            Av_N_exp_blanks= round(av_nexp, 6),
+            Av_p_nulls     = round(av_p,  6),
+            N_tot          = n_tot,
+            N_blanks       = n_blanks,
+            f_expBlanks    = round(f_exp, 6),
+            p_value        = pval,
+            p_nulls        = round(av_p, 6),
+            Recoded_blanks = as.integer(recoded_blanks[[loc]] %||% 0L),
+            Recode         = if (isTRUE(recode_flags[[loc]])) 0L else NA_integer_,
             stringsAsFactors=FALSE)
         })
         t2 <- do.call(rbind, t2_rows)
@@ -941,7 +1000,7 @@ server_null_alleles <- function(id, rv) {
         "# DCSE: Cavalli-Sforza & Edwards (1967) chord genetic distance",
         paste0("# Bootstrap replicates: ", r$nboot),
         paste0("# Confidence interval: ", ci_pct, " (alpha = ", r$alpha, ")"),
-        paste0("# Locus coding (000000=absent/PCR failure; 999999=null homozygote):"),
+        paste0("# Locus coding, auto-detected from data (000000=absent/PCR failure; 999999=null homozygote):"),
         paste0("#   ", treat_summary),
         "#"
       )
@@ -1234,14 +1293,17 @@ server_null_alleles <- function(id, rv) {
     })
 
     # ── Tab 1: null allele frequencies DTs ────────────────────────────────────
-    # t1 columns: Locus, Population, Coding, p_nulls, N, N_absent,
-    #             N_exp_blanks, p_nulls_x_N
+    # t1 columns: Locus, Population, Coding, p_nulls, N, N_blanks,
+    #             N_exp_blanks, p_nulls_x_N  — matches FreeNA's per-locus x
+    #             population report (Locus names / Farm / p_nulls / N /
+    #             N_exp_blanks / p_nulls*N), with Coding/N_blanks kept as
+    #             transparent, auto-detected extras.
     output$dt_t1 <- DT::renderDT({
       r <- results_r()
       shiny::validate(shiny::need(nrow(r$t1)>0, "No data yet. Click Compute."))
       d <- r$t1
       names(d) <- c("Locus","Population","Coding","p_nulls",
-                    "N (total)","N absent","N_exp_blanks","p_nulls\u00d7N")
+                    "N","N_blanks","N_exp_blanks","p_nulls\u00d7N")
       DT::datatable(d, rownames=FALSE,
         options=list(pageLength=20, scrollX=TRUE, dom="lftip",
           columnDefs=list(list(className="dt-right", targets=3:7))),
@@ -1256,20 +1318,25 @@ server_null_alleles <- function(id, rv) {
         DT::formatStyle("Locus", fontWeight="600", color="#0f172a")
     }, server=TRUE)
 
-    # t2 columns: Locus, Coding, Av_p_nulls, Av_N_exp, N_tot, N_blanks, f_expBlanks
+    # t2 columns: Locus, Coding, Av(N_exp_blanks), Av(p_nulls), N_tot, N_blanks,
+    #             f(expBlanks), p-value, p_nulls, Recoded_blanks, Recode
+    #             — matches FreeNA's per-locus summary report exactly.
     output$dt_t2 <- DT::renderDT({
       r <- results_r()
       shiny::validate(shiny::need(nrow(r$t2)>0, "No data yet. Click Compute."))
       d <- r$t2
-      names(d) <- c("Locus","Coding","Av(p_nulls)","Av(N_exp_blanks)",
-                    "N_tot","N_blanks","f(expBlanks)")
+      names(d) <- c("Locus","Coding","Av(N_exp_blanks)","Av(p_nulls)",
+                    "N_tot","N_blanks","f(expBlanks)","p-value","p_nulls",
+                    "Recoded_blanks","Recode")
       DT::datatable(d, rownames=FALSE,
         options=list(pageLength=20, scrollX=TRUE, dom="lftip",
-          columnDefs=list(list(className="dt-right", targets=2:6))),
+          columnDefs=list(list(className="dt-right", targets=2:10))),
         class="compact hover stripe") |>
-        DT::formatRound("Av(p_nulls)",     6) |>
-        DT::formatRound("Av(N_exp_blanks)",6) |>
-        DT::formatRound("f(expBlanks)",    6) |>
+        DT::formatRound("Av(p_nulls)",       6) |>
+        DT::formatRound("Av(N_exp_blanks)",  6) |>
+        DT::formatRound("f(expBlanks)",      6) |>
+        DT::formatRound("p-value",           3) |>
+        DT::formatRound("p_nulls",           6) |>
         DT::formatStyle("Av(p_nulls)",
           backgroundColor = DT::styleInterval(
             c(0.05,0.10,0.20),
