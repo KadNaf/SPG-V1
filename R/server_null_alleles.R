@@ -390,10 +390,106 @@ server_null_alleles <- function(id, rv) {
     make_ina_freq <- function(em) c(em$pfreq, `__null__` = em$rd)
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  FETCH ALL GENOTYPES
+    #  FETCH ALL GENOTYPES — read directly from the untouched "raw" upload
+    #  table whenever possible, bypassing the pre-built "hf" table entirely.
+    #  This sidesteps a data-import issue we tracked down where some loci's
+    #  "999999" (null homozygote) genotypes were silently turning into
+    #  "missing" before ever reaching this module — once that happens the
+    #  information is gone and no amount of fixing here can recover it, so we
+    #  go back to the original allele columns ourselves instead of trusting
+    #  whatever the import step already decided.
     # ══════════════════════════════════════════════════════════════════════════
+    raw_data_direct_r <- reactive({
+      db_ready()
+      con <- con_r()
+
+      has_helpers <- exists(".duckdb_get_param", mode="function", inherits=TRUE) &&
+                     exists(".duckdb_get_param_json", mode="function", inherits=TRUE) &&
+                     exists(".get_locus_cols_from_marker_cols", mode="function", inherits=TRUE)
+      if (!has_helpers) return(NULL)
+
+      tbl_raw <- tryCatch(.duckdb_get_param(con, "tbl_raw", default = "raw"),
+                           error = function(e) "raw")
+      if (is.null(tbl_raw) || is.na(tbl_raw) || !nzchar(tbl_raw) ||
+          !isTRUE(tryCatch(DBI::dbExistsTable(con, tbl_raw), error=function(e) FALSE)))
+        return(NULL)
+
+      marker_cols_raw <- tryCatch(.duckdb_get_param_json(con, "marker_cols_raw"),
+                                   error = function(e) character(0))
+      if (!length(marker_cols_raw)) return(NULL)
+
+      base <- suppressWarnings(as.integer(.duckdb_get_param(con, "base", default = NA)))
+      if (!is.finite(base) || base <= 0L) base <- as.integer(base_r())
+
+      loci <- tryCatch(.get_locus_cols_from_marker_cols(marker_cols_raw),
+                        error = function(e) character(0))
+      if (!length(loci)) return(NULL)
+
+      ms <- meta_schema_r()
+      tbl_meta <- tbl_meta_r()
+
+      pick_b <- function(locus, cols) {
+        cands <- c(paste0(locus, "_1"), paste0(locus, ".", 1:9))
+        hit <- cands[cands %in% cols]
+        if (length(hit)) hit[1] else NA_character_
+      }
+
+      raw_sql  <- sql_id(con, tbl_raw)
+      meta_sql <- sql_id(con, tbl_meta)
+      mi_q     <- sql_id(con, ms$ind_col)
+      pop_q    <- sql_id(con, ms$pop_col)
+
+      parts <- character(0)
+      for (loc in loci) {
+        if (!(loc %in% marker_cols_raw)) next
+        b_col <- pick_b(loc, marker_cols_raw)
+        if (is.na(b_col)) next
+        a_ident  <- sql_id(con, loc)
+        b_ident  <- sql_id(con, b_col)
+        loc_str  <- sql_str(con, loc)
+        parts <- c(parts, sprintf("
+          SELECT
+            CAST(m.%s AS VARCHAR) AS Individual,
+            CAST(m.%s AS VARCHAR) AS Population,
+            %s AS Marker,
+            CASE
+              WHEN a1 IS NULL OR a2 IS NULL THEN 0
+              WHEN a1 <= 0 OR a2 <= 0 THEN 0
+              ELSE a1 * %d + a2
+            END AS gt
+          FROM (
+            SELECT r.rowid AS indiv_id,
+                   TRY_CAST(r.%s AS INTEGER) AS a1,
+                   TRY_CAST(r.%s AS INTEGER) AS a2
+            FROM %s r
+          ) g
+          INNER JOIN %s m ON CAST(g.indiv_id AS VARCHAR) = CAST(m.%s AS VARCHAR)
+          WHERE m.%s IS NOT NULL",
+          mi_q, pop_q, loc_str, as.integer(base), a_ident, b_ident,
+          raw_sql, meta_sql, mi_q, pop_q))
+      }
+      if (!length(parts)) return(NULL)
+
+      out <- tryCatch(
+        DBI::dbGetQuery(con, paste(parts, collapse = "\nUNION ALL\n")),
+        error = function(e) NULL)
+      if (is.null(out) || !nrow(out)) return(NULL)
+
+      mk <- tryCatch(markers_r(), error = function(e) NULL)
+      if (!is.null(mk) && length(mk))
+        out <- out[order(match(out$Marker, mk), out$Population, out$Individual), ]
+      out
+    })
+
     raw_data_r <- reactive({
       db_ready()
+
+      # Preferred: straight from the raw upload table (see above).
+      direct <- tryCatch(raw_data_direct_r(), error = function(e) NULL)
+      if (!is.null(direct) && nrow(direct) > 0L) return(direct)
+
+      # Fallback: the pre-built hf table (older imports without
+      # marker_cols_raw stored, or a raw table that no longer exists).
       con   <- con_r(); hs <- hf_schema_r(); ms <- meta_schema_r()
       hf_q  <- sql_id(con,tbl_hf_r());  meta_q <- sql_id(con,tbl_meta_r())
       hi_q  <- sql_id(con,hs$ind_col);  hl_q   <- sql_id(con,hs$locus_col)
