@@ -187,9 +187,6 @@ null_alleles_UI <- function(id) {
           icon("sliders-h"), " Setup — 3 parameters to configure")),
       tags$div(class="na-panel-body",
 
-        # ── (0) Where genotypes are actually read from (diagnostic) ─────────
-        uiOutput(ns("ui_genotype_source")),
-
         # ── (1) Missing genotype coding per locus (your choice, suggested) ──
         tags$div(class="na-warn",
           icon("exclamation-triangle"), " ",

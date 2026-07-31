@@ -390,140 +390,10 @@ server_null_alleles <- function(id, rv) {
     make_ina_freq <- function(em) c(em$pfreq, `__null__` = em$rd)
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  FETCH ALL GENOTYPES — read directly from the untouched "raw" upload
-    #  table whenever possible, bypassing the pre-built "hf" table entirely.
-    #  This sidesteps a data-import issue we tracked down where some loci's
-    #  "999999" (null homozygote) genotypes were silently turning into
-    #  "missing" before ever reaching this module — once that happens the
-    #  information is gone and no amount of fixing here can recover it, so we
-    #  go back to the original allele columns ourselves instead of trusting
-    #  whatever the import step already decided.
+    #  FETCH ALL GENOTYPES
     # ══════════════════════════════════════════════════════════════════════════
-    # Explains, in plain text, whether raw_data_direct_r() succeeded and if
-    # not, exactly which check failed — so a silent fallback is never silent.
-    raw_source_diag <- reactiveVal("Not evaluated yet — open the \"Null allele frequencies\" tab or click Compute.")
-
-    raw_data_direct_r <- reactive({
-      db_ready()
-      con <- con_r()
-
-      has_helpers <- exists(".duckdb_get_param", mode="function", inherits=TRUE) &&
-                     exists(".duckdb_get_param_json", mode="function", inherits=TRUE) &&
-                     exists(".get_locus_cols_from_marker_cols", mode="function", inherits=TRUE)
-      if (!has_helpers) {
-        raw_source_diag("FALLBACK (hf table) — helper functions (.duckdb_get_param / .duckdb_get_param_json / .get_locus_cols_from_marker_cols) are not available in this session.")
-        return(NULL)
-      }
-
-      tbl_raw <- tryCatch(.duckdb_get_param(con, "tbl_raw", default = "raw"),
-                           error = function(e) "raw")
-      if (is.null(tbl_raw) || is.na(tbl_raw) || !nzchar(tbl_raw)) {
-        raw_source_diag(sprintf("FALLBACK (hf table) — 'tbl_raw' parameter missing or empty (got: %s).",
-                                 if (is.null(tbl_raw)) "NULL" else as.character(tbl_raw)))
-        return(NULL)
-      }
-      if (!isTRUE(tryCatch(DBI::dbExistsTable(con, tbl_raw), error = function(e) FALSE))) {
-        raw_source_diag(sprintf("FALLBACK (hf table) — raw table '%s' does not exist in DuckDB.", tbl_raw))
-        return(NULL)
-      }
-
-      marker_cols_raw <- tryCatch(.duckdb_get_param_json(con, "marker_cols_raw"),
-                                   error = function(e) character(0))
-      if (!length(marker_cols_raw)) {
-        raw_source_diag("FALLBACK (hf table) — 'marker_cols_raw' parameter missing/empty in DuckDB params table (this import may predate that setting).")
-        return(NULL)
-      }
-
-      base <- suppressWarnings(as.integer(.duckdb_get_param(con, "base", default = NA)))
-      if (!is.finite(base) || base <= 0L) base <- as.integer(base_r())
-
-      loci <- tryCatch(.get_locus_cols_from_marker_cols(marker_cols_raw),
-                        error = function(e) character(0))
-      if (!length(loci)) {
-        raw_source_diag("FALLBACK (hf table) — could not derive locus names from 'marker_cols_raw'.")
-        return(NULL)
-      }
-
-      ms <- meta_schema_r()
-      tbl_meta <- tbl_meta_r()
-
-      pick_b <- function(locus, cols) {
-        cands <- c(paste0(locus, "_1"), paste0(locus, ".", 1:9))
-        hit <- cands[cands %in% cols]
-        if (length(hit)) hit[1] else NA_character_
-      }
-
-      raw_sql  <- sql_id(con, tbl_raw)
-      meta_sql <- sql_id(con, tbl_meta)
-      mi_q     <- sql_id(con, ms$ind_col)
-      pop_q    <- sql_id(con, ms$pop_col)
-
-      parts        <- character(0)
-      unpaired_loci <- character(0)
-      for (loc in loci) {
-        if (!(loc %in% marker_cols_raw)) next
-        b_col <- pick_b(loc, marker_cols_raw)
-        if (is.na(b_col)) { unpaired_loci <- c(unpaired_loci, loc); next }
-        a_ident  <- sql_id(con, loc)
-        b_ident  <- sql_id(con, b_col)
-        loc_str  <- sql_str(con, loc)
-        parts <- c(parts, sprintf("
-          SELECT
-            CAST(m.%s AS VARCHAR) AS Individual,
-            CAST(m.%s AS VARCHAR) AS Population,
-            %s AS Marker,
-            CASE
-              WHEN a1 IS NULL OR a2 IS NULL THEN 0
-              WHEN a1 <= 0 OR a2 <= 0 THEN 0
-              ELSE a1 * %d + a2
-            END AS gt
-          FROM (
-            SELECT r.rowid AS indiv_id,
-                   TRY_CAST(r.%s AS INTEGER) AS a1,
-                   TRY_CAST(r.%s AS INTEGER) AS a2
-            FROM %s r
-          ) g
-          INNER JOIN %s m ON CAST(g.indiv_id AS VARCHAR) = CAST(m.%s AS VARCHAR)
-          WHERE m.%s IS NOT NULL",
-          mi_q, pop_q, loc_str, as.integer(base), a_ident, b_ident,
-          raw_sql, meta_sql, mi_q, pop_q))
-      }
-      if (!length(parts)) {
-        raw_source_diag(sprintf("FALLBACK (hf table) — no locus could be paired from 'marker_cols_raw' (unpaired: %s).",
-                                 paste(unpaired_loci, collapse=", ")))
-        return(NULL)
-      }
-
-      err_msg <- NULL
-      out <- tryCatch(
-        DBI::dbGetQuery(con, paste(parts, collapse = "\nUNION ALL\n")),
-        error = function(e) { err_msg <<- conditionMessage(e); NULL })
-      if (is.null(out) || !nrow(out)) {
-        raw_source_diag(sprintf("FALLBACK (hf table) — direct query against '%s' returned no rows or errored: %s",
-                                 tbl_raw, err_msg %||% "(no error message; empty result)"))
-        return(NULL)
-      }
-
-      mk <- tryCatch(markers_r(), error = function(e) NULL)
-      if (!is.null(mk) && length(mk))
-        out <- out[order(match(out$Marker, mk), out$Population, out$Individual), ]
-
-      raw_source_diag(sprintf(
-        "DIRECT (raw table) — read %d rows straight from '%s' for %d loci (bypassing hf).%s",
-        nrow(out), tbl_raw, length(loci),
-        if (length(unpaired_loci)) sprintf(" NOTE: could not pair %s.", paste(unpaired_loci, collapse=", ")) else ""))
-      out
-    })
-
     raw_data_r <- reactive({
       db_ready()
-
-      # Preferred: straight from the raw upload table (see above).
-      direct <- tryCatch(raw_data_direct_r(), error = function(e) NULL)
-      if (!is.null(direct) && nrow(direct) > 0L) return(direct)
-
-      # Fallback: the pre-built hf table (older imports without
-      # marker_cols_raw stored, or a raw table that no longer exists).
       con   <- con_r(); hs <- hf_schema_r(); ms <- meta_schema_r()
       hf_q  <- sql_id(con,tbl_hf_r());  meta_q <- sql_id(con,tbl_meta_r())
       hi_q  <- sql_id(con,hs$ind_col);  hl_q   <- sql_id(con,hs$locus_col)
@@ -544,15 +414,6 @@ server_null_alleles <- function(id, rv) {
         locus_order_cte(con,hf_q,hl_q),
         pop_q, sql_id(con,ms$ind_col), hl_q, hg_q,
         hf_q, meta_q, hi_q, mi_q, hl_q, pop_q))
-    })
-
-    output$ui_genotype_source <- renderUI({
-      tryCatch(raw_data_r(), error = function(e) NULL)  # force evaluation of the diagnostic
-      msg <- tryCatch(raw_source_diag(), error = function(e) "Not evaluated yet.")
-      ok  <- grepl("^DIRECT", msg)
-      tags$div(class = if (ok) "na-info" else "na-warn",
-        icon(if (ok) "database" else "exclamation-triangle"), " ",
-        tags$strong("Genotype source: "), msg)
     })
 
     em_results_r <- reactive({
@@ -1101,21 +962,14 @@ server_null_alleles <- function(id, rv) {
             n_total <- as.integer(e$efpop)          # total indiv (genotyped + missing)
             n_exp   <- n_total * (e$rd^2)           # N_total * p^2
             t1_rows[[length(t1_rows)+1L]] <- data.frame(
-              Locus         = loc,
-              Population    = pop,
-              Coding        = as.character(treats[loc] %||% "absent"),
-              p_nulls       = round(e$rd, 6),
-              N             = n_total,                        # total (genotyped + missing)
-              N_blanks      = as.integer(e$n_absent + e$n_null_homo), # missing, either coding
-              N_exp_blanks  = round(n_exp, 6),
-              p_nulls_x_N   = round(e$rd * n_total, 6),
-              # ── diagnostics — actual values used inside em_freena() for
-              # THIS population, so any mismatch vs "Coding" above can be
-              # spotted immediately (e.g. a locus set to null_homo but this
-              # particular population had n_null_homo==0, correctly falling
-              # back to the absent formulas for that population only) ──────
-              treat_used    = as.character(e$treat %||% "absent"),
-              n_null_homo   = as.integer(e$n_null_homo %||% 0L),
+              Locus        = loc,
+              Population   = pop,
+              Coding       = as.character(treats[loc] %||% "absent"),
+              p_nulls      = round(e$rd, 6),
+              N            = n_total,                        # total (genotyped + missing)
+              N_blanks     = as.integer(e$n_absent + e$n_null_homo), # missing, either coding
+              N_exp_blanks = round(n_exp, 6),
+              p_nulls_x_N  = round(e$rd * n_total, 6),
               stringsAsFactors=FALSE)
           }
         }
@@ -1489,23 +1343,19 @@ server_null_alleles <- function(id, rv) {
 
     # ── Tab 1: null allele frequencies DTs ────────────────────────────────────
     # t1 columns: Locus, Population, Coding, p_nulls, N, N_blanks,
-    #             N_exp_blanks, p_nulls_x_N, treat_used, n_null_homo —
-    #             matches FreeNA's per-locus x population report (Locus names
-    #             / Farm / p_nulls / N / N_exp_blanks / p_nulls*N), with
-    #             Coding/N_blanks/treat_used/n_null_homo kept as transparent
-    #             diagnostics: treat_used and n_null_homo show exactly what
-    #             em_freena() used for THIS population, so a mismatch against
-    #             the locus-level "Coding" is immediately visible.
+    #             N_exp_blanks, p_nulls_x_N  — matches FreeNA's per-locus x
+    #             population report (Locus names / Farm / p_nulls / N /
+    #             N_exp_blanks / p_nulls*N), with Coding/N_blanks kept as
+    #             transparent extras reflecting your chosen coding.
     output$dt_t1 <- DT::renderDT({
       r <- results_r()
       shiny::validate(shiny::need(nrow(r$t1)>0, "No data yet. Click Compute."))
       d <- r$t1
       names(d) <- c("Locus","Population","Coding","p_nulls",
-                    "N","N_blanks","N_exp_blanks","p_nulls\u00d7N",
-                    "treat_used","n_null_homo")
+                    "N","N_blanks","N_exp_blanks","p_nulls\u00d7N")
       DT::datatable(d, rownames=FALSE,
         options=list(pageLength=20, scrollX=TRUE, dom="lftip",
-          columnDefs=list(list(className="dt-right", targets=3:9))),
+          columnDefs=list(list(className="dt-right", targets=3:7))),
         class="compact hover stripe") |>
         DT::formatRound("p_nulls",           6) |>
         DT::formatRound("N_exp_blanks",       6) |>
