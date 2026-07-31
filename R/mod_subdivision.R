@@ -20,7 +20,11 @@ mod_subdivision_ui <- function(id) {
         "among populations \u2014 the valid scheme when Hardy-Weinberg is <em>not</em> assumed within samples ",
         "(FSTAT / Goudet et al. 1996). ",
         "Two one-sided p-values are reported, as in FSTAT: p<sub>\u2265</sub> = (b + 1)/(m + 1) with ",
-        "b = #{G<sub>perm</sub> &ge; G<sub>obs</sub>}, and p<sub>&gt;</sub> with b = #{G<sub>perm</sub> &gt; G<sub>obs</sub>}."
+        "b = #{G<sub>perm</sub> &ge; G<sub>obs</sub>}, and p<sub>&gt;</sub> with b = #{G<sub>perm</sub> &gt; G<sub>obs</sub>}.",
+        "<br><b>Seuls les individus à génotype multi-locus complet</b> (non manquant à TOUS les loci ",
+        "simultanément) sont utilisés, pour tous les loci et pour la permutation \u2014 exactement comme ",
+        "FSTAT (\u00ab Number of complete multilocus genotypes in the different samples \u00bb ; Goudet et al. 1996 \u00a77.1, note 1). ",
+        "N<sub>geno</sub> peut donc être inférieur au nombre d'individus non manquants à un locus pris isolément. "
       ))
     ),
 
