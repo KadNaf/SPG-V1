@@ -1567,5 +1567,14 @@ server_null_alleles <- function(id, rv) {
         DT::formatStyle("Locus",fontWeight="600",color="#0f172a")
     }, server=TRUE)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  SHARE RESULTS WITH OTHER MODULES (e.g. Isolation by Distance / Mantel)
+    #  so they can reuse the already-computed pairwise FST/FST-ENA/DCSE/DCSE-INA
+    #  (+ bootstrap CI) instead of recomputing everything from scratch.
+    # ══════════════════════════════════════════════════════════════════════════
+    observeEvent(results_r(), {
+      rv$null_alleles_results <- results_r()
+    }, ignoreNULL = FALSE)
+
   }) # end moduleServer
 }
