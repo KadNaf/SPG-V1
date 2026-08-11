@@ -1047,14 +1047,18 @@ server_null_alleles <- function(id, rv) {
       root_guess <- tools::file_path_sans_ext(basename(trimws(fn)))
       cur <- trimws(input$out_root %||% "")
       if (!nzchar(cur) || identical(cur, last_auto_root())) {
-        updateTextInput(session, "out_root", value = root_guess)
+        updateTextInput(session, "out_root", value = root_guess, placeholder = root_guess)
         last_auto_root(root_guess)
+      } else {
+        # User has typed their own root — still show the imported file's name
+        # as the greyed-out placeholder/fallback, instead of a generic hint.
+        updateTextInput(session, "out_root", placeholder = root_guess)
       }
     }, ignoreInit = FALSE, ignoreNULL = TRUE)
 
     out_root_r <- reactive({
       r <- trimws(input$out_root %||% "")
-      if (nzchar(r)) r else "SPG_"
+      if (nzchar(r)) r else if (nzchar(last_auto_root())) last_auto_root() else "SPG_"
     })
     out_suffix_r <- reactive({ trimws(input$out_suffix %||% "") })
 
@@ -1315,66 +1319,6 @@ server_null_alleles <- function(id, rv) {
           legend = list(x=0.02, y=0.98))
     })
 
-    # ── Save all files automatically to the chosen output folder ──────────────
-    volumes_r <- c(Home = path.expand("~"), "R installation" = R.home(),
-                    shinyFiles::getVolumes()())
-    shinyFiles::shinyDirChoose(input, "out_dir_browse", roots = volumes_r, session = session)
-
-    out_dir_r <- reactive({
-      sel <- input$out_dir_browse
-      if (is.null(sel) || identical(sel, 0)) return(NULL)
-      tryCatch(shinyFiles::parseDirPath(volumes_r, sel), error = function(e) NULL)
-    })
-
-    observeEvent(input$out_dir_browse, {
-      d <- out_dir_r()
-      if (!is.null(d) && length(d) && nzchar(d))
-        updateTextInput(session, "out_dir_display", value = d)
-    })
-
-    observeEvent(results_r(), {
-      dir <- trimws(input$out_dir_display %||% "")
-      if (!nzchar(dir) || !dir.exists(dir)) return(invisible(NULL))
-      tryCatch({
-        d1 <- file1_data(); d2 <- file2_data(); d3 <- file3_data()
-        d4 <- file4_data(); d5 <- file5_data()
-
-        write_with_header(c(d1$header, "Section 1: p_nulls per locus x population",
-                             "N_exp_blanks: expected number of null homozygotes = N * p_nulls^2", ""),
-                           d1$t1, file.path(dir, out_filename("null_allele_frequencies")), sep="\t")
-        write("", file = file.path(dir, out_filename("null_allele_frequencies")), append = TRUE)
-        write("Section 2: N-weighted mean per locus",
-              file = file.path(dir, out_filename("null_allele_frequencies")), append = TRUE)
-        write.table(d1$t2, file = file.path(dir, out_filename("null_allele_frequencies")),
-                    sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE, col.names = TRUE)
-
-        write_with_header(d2$header, d2$data, file.path(dir, out_filename("global_FST_ENA_CI")), sep="\t")
-        write_with_header(d3$header, d3$data, file.path(dir, out_filename("pairwise_long_format")), sep="\t")
-
-        con4 <- file(file.path(dir, out_filename("per_locus_half_matrices")), open="w", encoding="UTF-8")
-        writeLines(d4$header, con=con4, useBytes=TRUE)
-        for (loc in d4$markers) {
-          for (sc in c("FST_raw","FST_ENA")) {
-            writeLines(half_matrix_txt(d4$fst_df, sc, d4$pops, loc), con=con4, useBytes=TRUE)
-            writeLines("", con=con4)
-          }
-          for (sc in c("DCSE_raw","DCSE_INA")) {
-            writeLines(half_matrix_txt(d4$dc_df, sc, d4$pops, loc), con=con4, useBytes=TRUE)
-            writeLines("", con=con4)
-          }
-        }
-        close(con4)
-
-        write_with_header(d5$header, d5$data, file.path(dir, out_filename("bootstrap_distributions")), sep="\t")
-
-        showNotification(
-          paste0("Saved 5 files to: ", dir), type = "message", duration = 6)
-      }, error = function(e) {
-        showNotification(paste0("Could not save to folder: ", conditionMessage(e)),
-                          type = "error", duration = 8)
-      })
-    }, ignoreInit = TRUE)
-
     # ── Show the actual computed filename on each output-file card ────────────
     output$ui_filename_1 <- renderUI(tags$code(out_filename("null_allele_frequencies")))
     output$ui_filename_2 <- renderUI(tags$code(out_filename("global_FST_ENA_CI")))
@@ -1402,55 +1346,61 @@ server_null_alleles <- function(id, rv) {
       r <- tryCatch(results_r(), error = function(e) NULL)
       if (is.null(r)) return(NULL)
       ci_pct <- paste0(round((1-r$alpha)*100,3),"%")
-      dir <- trimws(input$out_dir_display %||% "")
       tags$div(class="na-info", style="margin-top:.5rem;",
         icon("check-circle"), " ",
         tags$strong("Computation complete."),
         sprintf(" %d loci \u00b7 %d populations \u00b7 %d loci-replicates \u00b7 %d sub-sample-replicates \u00b7 %s CI.",
                 length(r$markers), length(r$pops), r$nboot, r$nboot_subs %||% r$nboot, ci_pct),
-        if (nzchar(dir)) sprintf(" 5 files saved to %s.", dir)
-        else " No output folder chosen \u2014 use the .txt buttons below to download each file."
+        " Use the .txt buttons below each result to download the 5 output files."
       )
     })
 
-    # ── Value boxes ────────────────────────────────────────────────────────────
-    output$vb_loci <- renderUI({
-      tryCatch(tags$span(length(markers_r())), error=function(e) tags$span("\u2014"))
+    # ── Value boxes ──────────────────────────────────────────────────────────
+    # (shinydashboard valueBox, same component/icons/colors as everywhere else
+    #  in the app — the Isolation by Distance module reuses these very numbers
+    #  with the same icon/color choices for "Loci", "Populations" and
+    #  "Global FST-ENA", see server_isolation_by_distance.R)
+    output$vb_loci <- renderValueBox({
+      n <- tryCatch(length(markers_r()), error = function(e) NA_integer_)
+      valueBox(if (is.na(n)) "\u2014" else n, "Loci", icon = icon("dna"), color = "navy")
     })
-    output$vb_pops <- renderUI({
-      tryCatch(tags$span(length(pops_r())), error=function(e) tags$span("\u2014"))
+    output$vb_pops <- renderValueBox({
+      n <- tryCatch(length(pops_r()), error = function(e) NA_integer_)
+      valueBox(if (is.na(n)) "\u2014" else n, "Populations", icon = icon("users"), color = "teal")
     })
-    output$vb_n <- renderUI({
-      tryCatch({
+    output$vb_n <- renderValueBox({
+      n <- tryCatch({
         db_ready(); con <- con_r(); ms <- meta_schema_r()
-        n <- DBI::dbGetQuery(con, sprintf(
+        DBI::dbGetQuery(con, sprintf(
           "SELECT COUNT(DISTINCT CAST(%s AS VARCHAR)) AS n FROM %s WHERE %s IS NOT NULL",
           sql_id(con,ms$ind_col),sql_id(con,tbl_meta_r()),sql_id(con,ms$ind_col)))$n[[1]]
-        tags$span(n)
-      }, error=function(e) tags$span("\u2014"))
+      }, error = function(e) NA_integer_)
+      valueBox(if (is.na(n)) "\u2014" else n, "Individuals", icon = icon("user"), color = "purple")
     })
-    output$vb_avg_null <- renderUI({
-      tryCatch({
+    output$vb_avg_null <- renderValueBox({
+      v <- tryCatch({
         r <- results_r()
-        v <- round(mean(r$t1$p_nulls, na.rm=TRUE), 4)
-        col <- if(v>.20)"#9d174d" else if(v>.10)"#854d0e" else "#166534"
-        tags$span(style=paste0("color:",col,";"), v)
-      }, error=function(e) tags$span("\u2014"))
+        round(mean(r$t1$p_nulls, na.rm = TRUE), 4)
+      }, error = function(e) NA_real_)
+      col <- if (is.na(v)) "navy" else if (v > .20) "red" else if (v > .10) "yellow" else "green"
+      valueBox(if (is.na(v)) "\u2014" else v, "Avg p_nulls", icon = icon("percent"), color = col)
     })
-    output$vb_max_null <- renderUI({
-      tryCatch({
+    output$vb_max_null <- renderValueBox({
+      v <- tryCatch({
         r <- results_r()
-        v <- round(max(r$t1$p_nulls, na.rm=TRUE), 4)
-        col <- if(v>.30)"#9d174d" else if(v>.15)"#854d0e" else "#166534"
-        tags$span(style=paste0("color:",col,";"), v)
-      }, error=function(e) tags$span("\u2014"))
+        round(max(r$t1$p_nulls, na.rm = TRUE), 4)
+      }, error = function(e) NA_real_)
+      col <- if (is.na(v)) "navy" else if (v > .30) "red" else if (v > .15) "yellow" else "green"
+      valueBox(if (is.na(v)) "\u2014" else v, "Max p_nulls", icon = icon("arrow-up"), color = col)
     })
-    output$vb_fst_ena <- renderUI({
-      tryCatch({
-        r <- results_r(); v <- round(r$fst_global$global_ena, 4)
-        col <- if(!is.na(v)&&v>.15)"#9d174d" else if(!is.na(v)&&v>.05)"#854d0e" else "#166534"
-        tags$span(style=paste0("color:",col,";"), if(is.na(v))"\u2014" else v)
-      }, error=function(e) tags$span("\u2014"))
+    output$vb_fst_ena <- renderValueBox({
+      v <- tryCatch({
+        r <- results_r()
+        round(r$fst_global$global_ena, 4)
+      }, error = function(e) NA_real_)
+      col <- if (is.na(v)) "navy" else if (v > .15) "red" else if (v > .05) "yellow" else "green"
+      valueBox(if (is.na(v)) "\u2014" else v, HTML("Global F<sub>ST</sub>-ENA"),
+               icon = icon("chart-bar"), color = col)
     })
 
     # ── Tab 1: null allele frequencies DTs ────────────────────────────────────
