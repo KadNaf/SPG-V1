@@ -894,6 +894,25 @@ server_isolation_by_distance <- function(id, rv) {
                                         if (length(cols) >= 2L) cols[2] else NULL))
     })
 
+    # Build a symmetric matrix of RANKS from a symmetric matrix of raw
+    # values, over its lower-triangle finite entries — used to feed the
+    # C++ cross-product engine for a Spearman-style test (rank first, then
+    # test the ranks with the same engine as Pearson/slope; this matches
+    # Genepop's own idxsup()/idxinf() rank-then-cross-product approach for
+    # rankBool=TRUE).
+    .rank_matrix <- function(m) {
+      n <- nrow(m)
+      idx <- which(lower.tri(matrix(TRUE, n, n)))
+      vals <- m[idx]
+      ok <- is.finite(vals)
+      rk <- vals; rk[ok] <- rank(vals[ok])
+      mr <- matrix(NA_real_, n, n, dimnames = dimnames(m))
+      mr[idx] <- rk
+      mr_t <- t(mr)
+      mr[upper.tri(mr)] <- mr_t[upper.tri(mr)]
+      mr
+    }
+
     gf_result_r <- eventReactive(input$run_gf_mantel, {
       df <- gf_base_df_r()
       p1c <- input$gf_col_pop1; p2c <- input$gf_col_pop2
@@ -913,25 +932,70 @@ server_isolation_by_distance <- function(id, rv) {
       m_y <- .mt_build_square(tmp, "P1", "P2", "Y", all_labels)
 
       n_perm <- as.integer(input$gf_n_perm); stat <- input$gf_stat
-      set.seed(suppressWarnings(as.integer(input$gf_seed %||% 67144630)))
-      withProgress(message = "Running Mantel test (Genepop/Fstat convention)\u2026", value = 0.2, {
-        res <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = stat, p_formula = "plain")
-        setProgress(1.0)
-      })
+      seed <- suppressWarnings(as.integer(input$gf_seed %||% 67144630))
+
+      if (identical(input$gf_engine, "cpp")) {
+        # C++ engine: reproduces Genepop's own std::mt19937 +
+        # std::uniform_int_distribution algorithm exactly (see
+        # src/mantel_genepop.cpp) — the best practical chance of matching
+        # Genepop's actual permutation sequence, since R packages are
+        # normally compiled with the same MinGW-w64/GCC toolchain family
+        # that most likely built Genepop.exe.
+        mx_eng <- if (identical(stat, "spearman")) .rank_matrix(m_x) else m_x
+        my_eng <- if (identical(stat, "spearman")) .rank_matrix(m_y) else m_y
+        withProgress(message = "Running Mantel test (C++ engine, Genepop RNG)\u2026", value = 0.3, {
+          cpp_res <- mantel_genepop_cpp(mx_eng, my_eng, n_perm, as.double(seed))
+          setProgress(1.0)
+        })
+        # Display-friendly statistic (Pearson r / slope b / Spearman rho),
+        # computed the standard way in R on the same lower-triangle pairs —
+        # the C++ engine itself only needs to rank the observed cross-product
+        # against the permuted ones (mathematically equivalent ranking to
+        # testing directly on r/b/rho, established analytically: for fixed
+        # X, permuting only Y, the cross-product sum is an exact linear
+        # function of both the covariance and the regression slope).
+        n <- nrow(m_x)
+        lower_idx <- which(lower.tri(matrix(TRUE, n, n)))
+        x_all <- m_x[lower_idx]; y_all <- m_y[lower_idx]
+        ok <- is.finite(x_all) & is.finite(y_all)
+        stat_obs <- if (stat == "b") unname(coef(lm(y_all[ok] ~ x_all[ok]))[2L])
+                    else if (stat == "spearman") suppressWarnings(cor(x_all[ok], y_all[ok], method = "spearman"))
+                    else suppressWarnings(cor(x_all[ok], y_all[ok]))
+        lm0 <- tryCatch(lm(y_all[ok] ~ x_all[ok]), error = function(e) NULL)
+        pair_idx <- which(lower.tri(matrix(TRUE, n, n)), arr.ind = TRUE)
+        res <- list(
+          stat_obs = stat_obs, p_pos = cpp_res$p_pos, p_neg = cpp_res$p_neg,
+          n_pairs = cpp_res$n_pairs,
+          slope = if (!is.null(lm0)) unname(coef(lm0)[2L]) else NA_real_,
+          intercept = if (!is.null(lm0)) unname(coef(lm0)[1L]) else NA_real_,
+          r2 = if (!is.null(lm0)) summary(lm0)$r.squared else NA_real_,
+          x = x_all[ok], y = y_all[ok],
+          pop1 = rownames(m_x)[pair_idx[ok, "row"]], pop2 = rownames(m_x)[pair_idx[ok, "col"]],
+          common = rownames(m_x), perm_stats = as.numeric(cpp_res$perm_stats)
+        )
+      } else {
+        set.seed(seed)
+        withProgress(message = "Running Mantel test (R engine)\u2026", value = 0.2, {
+          res <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = stat, p_formula = "plain")
+          setProgress(1.0)
+        })
+      }
       res$x_label <- paste0(xcol, if (isTRUE(input$gf_log_x)) " (ln)" else "")
       res$y_label <- ycol
       res$stat_label <- switch(stat, b = "Slope b", spearman = "Spearman rho", "Pearson r")
+      res$engine <- input$gf_engine %||% "r"
       res
     })
 
     output$dt_gf_summary <- DT::renderDT({
       r <- gf_result_r()
       d <- data.frame(
-        Quantity = c("X variable", "Y variable", "Statistic", "Observed value",
+        Quantity = c("Engine", "X variable", "Y variable", "Statistic", "Observed value",
                      "Slope b (Y ~ X)", "Intercept", "R\u00b2", "p-value formula",
                      "p (one-sided, positive assoc.)", "p (one-sided, negative assoc.)",
                      "Pairs used (n)", "Common populations (N)", "Permutations", "Random seed"),
-        Value = c(r$x_label, r$y_label, r$stat_label, .fmt_stat(r$stat_obs),
+        Value = c(if (identical(r$engine, "cpp")) "C++ (Genepop-identical RNG)" else "R (portable)",
+                  r$x_label, r$y_label, r$stat_label, .fmt_stat(r$stat_obs),
                   .fmt_stat(r$slope), .fmt_stat(r$intercept),
                   sprintf("%.4f", r$r2), "b/m (Genepop/Fstat, no +1)",
                   if (is.na(r$p_pos)) "NA" else sprintf("%.4f", r$p_pos),

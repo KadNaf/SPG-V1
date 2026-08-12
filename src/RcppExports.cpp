@@ -390,6 +390,21 @@ BEGIN_RCPP
 END_RCPP
 }
 
+// mantel_genepop_cpp
+Rcpp::List mantel_genepop_cpp(Rcpp::NumericMatrix Xmat, Rcpp::NumericMatrix Ymat, int nperm, double seedVal);
+RcppExport SEXP _shinypopgen_mantel_genepop_cpp(SEXP XmatSEXP, SEXP YmatSEXP, SEXP npermSEXP, SEXP seedValSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type Xmat(XmatSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type Ymat(YmatSEXP);
+    Rcpp::traits::input_parameter< int >::type nperm(npermSEXP);
+    Rcpp::traits::input_parameter< double >::type seedVal(seedValSEXP);
+    rcpp_result_gen = Rcpp::wrap(mantel_genepop_cpp(Xmat, Ymat, nperm, seedVal));
+    return rcpp_result_gen;
+END_RCPP
+}
+
 static const R_CallMethodDef CallEntries[] = {
     {"_shinypopgen_wc_fis_by_pop", (DL_FUNC) &_shinypopgen_wc_fis_by_pop, 3},
     {"_shinypopgen_boot_indiv_wc_fis_by_pop", (DL_FUNC) &_shinypopgen_boot_indiv_wc_fis_by_pop, 6},
@@ -416,6 +431,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_shinypopgen_boot_popblock_wc84_parallel", (DL_FUNC) &_shinypopgen_boot_popblock_wc84_parallel, 7},
     {"_shinypopgen_boot_indiv_hs_cpp", (DL_FUNC) &_shinypopgen_boot_indiv_hs_cpp, 7},
     {"_shinypopgen_ld_pvalues_cpp", (DL_FUNC) &_shinypopgen_ld_pvalues_cpp, 5},
+    {"_shinypopgen_mantel_genepop_cpp", (DL_FUNC) &_shinypopgen_mantel_genepop_cpp, 4},
     {NULL, NULL, 0}
 };
 

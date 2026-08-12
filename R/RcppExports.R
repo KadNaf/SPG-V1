@@ -101,3 +101,7 @@ ld_pvalues_cpp <- function(Population, geno_mat, base, nbperms = 10000L, seed = 
     .Call(`_shinypopgen_ld_pvalues_cpp`, Population, geno_mat, base, nbperms, seed)
 }
 
+mantel_genepop_cpp <- function(Xmat, Ymat, nperm, seedVal) {
+    .Call(`_shinypopgen_mantel_genepop_cpp`, Xmat, Ymat, nperm, seedVal)
+}
+
