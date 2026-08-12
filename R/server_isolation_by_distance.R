@@ -75,8 +75,13 @@ server_isolation_by_distance <- function(id, rv) {
 
     output$ui_run_status <- renderUI({
       if (isTRUE(identical(input$ibd_source, "external"))) {
+        fname <- input$ibd_ext_file$name
+        n_rows <- tryCatch(nrow(full_pair_table_external_r()), error = function(e) NA_integer_)
         return(tags$div(class = "na-info", icon("file-import"), " ",
-          "Using a re-loaded external pairwise file \u2014 the Null Alleles module is not needed for this run."))
+          if (is.null(fname)) "No file uploaded yet \u2014 choose a pairwise file above."
+          else tagList("Using uploaded file: ", tags$strong(fname),
+                       sprintf(" (%s rows) \u2014 the Null Alleles module is not needed for this run.",
+                               if (is.na(n_rows)) "?" else n_rows))))
       }
       r <- tryCatch(na_results_r(), error = function(e) NULL)
       if (is.null(r)) return(NULL)
@@ -212,8 +217,8 @@ server_isolation_by_distance <- function(id, rv) {
       shiny::validate(shiny::need(!identical(pop1_col, pop2_col),
         "Could not identify two distinct Pop1/Pop2 columns in the uploaded file."))
 
-      df <- data.frame(Pop1 = as.character(ext[[pop1_col]]),
-                        Pop2 = as.character(ext[[pop2_col]]),
+      df <- data.frame(Pop1 = trimws(as.character(ext[[pop1_col]])),
+                        Pop2 = trimws(as.character(ext[[pop2_col]])),
                         stringsAsFactors = FALSE)
 
       num_col <- function(pats) {
@@ -314,7 +319,7 @@ server_isolation_by_distance <- function(id, rv) {
         pop2_col <- .guess_col(nm, c("^Pop2$", "^Farm2$", "^ID2$"), nm[2])
         dist_col <- .guess_col(nm, c("^Distance$", "^Dgeo", "^Dist$"), nm[3])
 
-        key <- function(a, b) { a <- as.character(a); b <- as.character(b)
+        key <- function(a, b) { a <- trimws(as.character(a)); b <- trimws(as.character(b))
                                  ifelse(a <= b, paste(a, b, sep = "__"), paste(b, a, sep = "__")) }
 
         ext2 <- data.frame(
@@ -503,7 +508,7 @@ server_isolation_by_distance <- function(id, rv) {
       n <- length(all_labels)
       m <- matrix(NA_real_, n, n, dimnames = list(all_labels, all_labels))
       for (k in seq_len(nrow(df))) {
-        i <- as.character(df[[id1]][k]); j <- as.character(df[[id2]][k]); v <- df[[value_col]][k]
+        i <- trimws(as.character(df[[id1]][k])); j <- trimws(as.character(df[[id2]][k])); v <- df[[value_col]][k]
         if (i %in% all_labels && j %in% all_labels && is.finite(v)) { m[i, j] <- v; m[j, i] <- v }
       }
       m
@@ -522,10 +527,13 @@ server_isolation_by_distance <- function(id, rv) {
       if (length(common) < 3L)
         return(list(stat_obs = NA_real_, p_pos = NA_real_, p_neg = NA_real_, n_pairs = 0L,
                     slope = NA_real_, intercept = NA_real_, r2 = NA_real_,
-                    x = numeric(0), y = numeric(0), common = common, perm_stats = numeric(0)))
+                    x = numeric(0), y = numeric(0), pop1 = character(0), pop2 = character(0),
+                    common = common, perm_stats = numeric(0)))
       m1 <- mat1[common, common, drop = FALSE]; m2 <- mat2[common, common, drop = FALSE]
       n  <- length(common)
+      pair_idx  <- which(lower.tri(matrix(TRUE, n, n)), arr.ind = TRUE)
       lower_idx <- which(lower.tri(matrix(TRUE, n, n)))
+      pop1_all  <- common[pair_idx[, "row"]]; pop2_all <- common[pair_idx[, "col"]]
       x_all <- m1[lower_idx]; y_all <- m2[lower_idx]
       stat_fn <- function(xx, yy) {
         ok <- is.finite(xx) & is.finite(yy)
@@ -555,7 +563,9 @@ server_isolation_by_distance <- function(id, rv) {
            slope = if (!is.null(lm0)) unname(coef(lm0)[2L]) else NA_real_,
            intercept = if (!is.null(lm0)) unname(coef(lm0)[1L]) else NA_real_,
            r2 = if (!is.null(lm0)) summary(lm0)$r.squared else NA_real_,
-           x = x_all[ok_obs], y = y_all[ok_obs], common = common, perm_stats = perm_fin)
+           x = x_all[ok_obs], y = y_all[ok_obs],
+           pop1 = pop1_all[ok_obs], pop2 = pop2_all[ok_obs],
+           common = common, perm_stats = perm_fin)
     }
 
     .mt_read_file <- function(fileinfo, sep, header) {
@@ -579,7 +589,7 @@ server_isolation_by_distance <- function(id, rv) {
           id_cols  <- names(extra)[1:2]
           val_cols <- setdiff(names(extra), id_cols)
           extra_keep <- extra[, val_cols, drop = FALSE]
-          key <- function(a, b) { a<-as.character(a); b<-as.character(b); ifelse(a<=b, paste(a,b,sep="__"), paste(b,a,sep="__")) }
+          key <- function(a, b) { a<-trimws(as.character(a)); b<-trimws(as.character(b)); ifelse(a<=b, paste(a,b,sep="__"), paste(b,a,sep="__")) }
           extra_keep$.key <- key(extra[[1L]], extra[[2L]])
           extra_keep <- extra_keep[!duplicated(extra_keep$.key), , drop = FALSE]
           df$.key <- key(df$Pop1, df$Pop2)
@@ -591,6 +601,30 @@ server_isolation_by_distance <- function(id, rv) {
         shiny::req(input$mt_file)
         .mt_read_file(input$mt_file, input$mt_sep, input$mt_header)
       }
+    })
+
+    # ── Uploaded-file confirmations — a fileInput() alone only shows the
+    #    name next to the Browse button; these echo it back (with a row
+    #    count) right where the user is about to act, so it's unmistakable
+    #    which file is actually being used for the computation.
+    .file_status_ui <- function(fileinfo, df_reactive) {
+      if (is.null(fileinfo)) return(tags$p(style="color:#999;font-size:11px;", icon("info-circle"), " No file uploaded yet."))
+      n <- tryCatch(nrow(df_reactive()), error = function(e) NA_integer_)
+      tags$p(style="color:#166534;font-size:11px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:4px;padding:4px 6px;",
+        icon("check-circle"), " Loaded: ", tags$strong(fileinfo$name),
+        if (!is.na(n)) sprintf(" (%d rows)", n) else "")
+    }
+    output$ibd_ext_file_status <- renderUI(.file_status_ui(input$ibd_ext_file, full_pair_table_external_r))
+    output$ibd_dgeo_file_status <- renderUI({
+      .file_status_ui(input$ibd_dgeo_file,
+        reactive(.mt_read_file(input$ibd_dgeo_file, input$ibd_dgeo_sep, input$ibd_dgeo_header)))
+    })
+    output$mt_file_status <- renderUI({
+      .file_status_ui(input$mt_file, reactive(.mt_read_file(input$mt_file, input$mt_sep, input$mt_header)))
+    })
+    output$mt_extra_file_status <- renderUI({
+      .file_status_ui(input$mt_extra_file,
+        reactive(.mt_read_file(input$mt_extra_file, input$mt_extra_sep, input$mt_extra_header)))
     })
 
     .guess_col <- function(cols, patterns, fallback) {
@@ -612,7 +646,7 @@ server_isolation_by_distance <- function(id, rv) {
       df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
       selectInput(session$ns("mt_col_x"), "X column:", choices = cols,
-                  selected = .guess_col(cols, c("Dgeo", "lnDgeo"), if (length(cols)) cols[1] else NULL))
+                  selected = .guess_col(cols, c("lnDgeo", "Dgeo"), if (length(cols)) cols[1] else NULL))
     })
     output$mt_col_y_ui <- renderUI({
       df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
@@ -636,7 +670,7 @@ server_isolation_by_distance <- function(id, rv) {
       if (nzchar(trimws(input$mt_exclude %||% ""))) {
         excl <- trimws(strsplit(input$mt_exclude, ",")[[1L]]); excl <- excl[nzchar(excl)]
         if (length(excl)) {
-          key <- function(a,b){a<-as.character(a);b<-as.character(b);ifelse(a<=b,paste(a,b,sep="__"),paste(b,a,sep="__"))}
+          key <- function(a,b){a<-trimws(as.character(a));b<-trimws(as.character(b));ifelse(a<=b,paste(a,b,sep="__"),paste(b,a,sep="__"))}
           key_df <- key(df[[p1c]], df[[p2c]])
           key_excl <- vapply(excl, function(s) {
             ids <- trimws(strsplit(s, "-")[[1L]]); if (length(ids) == 2L) key(ids[1], ids[2]) else NA_character_
@@ -649,8 +683,8 @@ server_isolation_by_distance <- function(id, rv) {
       y <- suppressWarnings(as.numeric(df[[ycol]]))
       if (isTRUE(input$mt_log_x)) x <- ifelse(x > 0, log(x), NA_real_)
 
-      all_labels <- sort(unique(c(as.character(df[[p1c]]), as.character(df[[p2c]]))))
-      tmp <- data.frame(P1 = as.character(df[[p1c]]), P2 = as.character(df[[p2c]]), X = x, Y = y)
+      all_labels <- sort(unique(trimws(c(as.character(df[[p1c]]), as.character(df[[p2c]])))))
+      tmp <- data.frame(P1 = trimws(as.character(df[[p1c]])), P2 = trimws(as.character(df[[p2c]])), X = x, Y = y)
       m_x <- .mt_build_square(tmp, "P1", "P2", "X", all_labels)
       m_y <- .mt_build_square(tmp, "P1", "P2", "Y", all_labels)
 
@@ -744,7 +778,8 @@ server_isolation_by_distance <- function(id, rv) {
 
     output$dt_mantel_data <- DT::renderDT({
       r <- mantel_result_r()
-      df <- data.frame(X = round(r$x, 6), Y = round(r$y, 6))
+      df <- data.frame(Pop1 = r$pop1, Pop2 = r$pop2, X = round(r$x, 6), Y = round(r$y, 6))
+      names(df)[3:4] <- c(r$x_label, r$y_label)
       DT::datatable(df, rownames = FALSE,
         options = list(scrollX = TRUE, pageLength = 10, dom = "lrtip"),
         class = "compact stripe hover")
@@ -753,7 +788,9 @@ server_isolation_by_distance <- function(id, rv) {
       filename = function() paste0("mantel_data_", Sys.Date(), ".csv"),
       content  = function(file) {
         r <- mantel_result_r()
-        write.csv(data.frame(X = r$x, Y = r$y), file, row.names = FALSE)
+        d <- data.frame(Pop1 = r$pop1, Pop2 = r$pop2, X = r$x, Y = r$y)
+        names(d)[3:4] <- c(r$x_label, r$y_label)
+        write.csv(d, file, row.names = FALSE)
       }
     )
 
@@ -815,9 +852,9 @@ server_isolation_by_distance <- function(id, rv) {
         shiny::need(all(c(p1c, p2c, ycol, xcols) %in% names(df)), "Selected columns not found.")
       )
 
-      all_labels <- sort(unique(c(as.character(df[[p1c]]), as.character(df[[p2c]]))))
+      all_labels <- sort(unique(trimws(c(as.character(df[[p1c]]), as.character(df[[p2c]])))))
       build <- function(valcol) {
-        tmp <- data.frame(P1 = as.character(df[[p1c]]), P2 = as.character(df[[p2c]]),
+        tmp <- data.frame(P1 = trimws(as.character(df[[p1c]])), P2 = trimws(as.character(df[[p2c]])),
                            V = suppressWarnings(as.numeric(df[[valcol]])))
         .mt_build_square(tmp, "P1", "P2", "V", all_labels)
       }

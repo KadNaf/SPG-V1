@@ -37,20 +37,20 @@ isolation_by_distance_UI <- function(id) {
       ))
     ),
 
-    # fluidRow(
-    #   box(
-    #     width = 12, solidHeader = TRUE, status = "primary",
-    #     title = div(style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-    #                 icon("chart-bar"), " Summary "),
-    #     fluidRow(
-    #       column(3, valueBoxOutput(ns("box_nloci"),  width = NULL)),
-    #       column(3, valueBoxOutput(ns("box_npops"),  width = NULL)),
-    #       column(3, valueBoxOutput(ns("box_fstena"), width = NULL)),
-    #       column(3, valueBoxOutput(ns("box_nboot"),  width = NULL))
-    #     ),
-    #     uiOutput(ns("ui_run_status"))
-    #   )
-    # ),
+    fluidRow(
+      box(
+        width = 12, solidHeader = TRUE, status = "primary",
+        title = div(style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
+                    icon("chart-bar"), " Summary "),
+        fluidRow(
+          column(3, valueBoxOutput(ns("box_nloci"),  width = NULL)),
+          column(3, valueBoxOutput(ns("box_npops"),  width = NULL)),
+          column(3, valueBoxOutput(ns("box_fstena"), width = NULL)),
+          column(3, valueBoxOutput(ns("box_nboot"),  width = NULL))
+        ),
+        uiOutput(ns("ui_run_status"))
+      )
+    ),
 
     tabsetPanel(
       id = ns("ibd_tabs"), type = "tabs",
@@ -80,7 +80,8 @@ isolation_by_distance_UI <- function(id) {
               radioButtons(ns("ibd_ext_sep"), "Separator:",
                 choices = c("Tab" = "\t", "Comma" = ",", "Semicolon" = ";"),
                 selected = "\t", inline = TRUE),
-              checkboxInput(ns("ibd_ext_header"), "File has header row", value = TRUE)
+              checkboxInput(ns("ibd_ext_header"), "File has header row", value = TRUE),
+              uiOutput(ns("ibd_ext_file_status"))
             ),
             tags$hr(),
             radioButtons(ns("ibd_model"), "Habitat model:",
@@ -111,6 +112,7 @@ isolation_by_distance_UI <- function(id) {
                   choices = c("Comma" = ",", "Tab" = "\t", "Semicolon" = ";"),
                   selected = ",", inline = TRUE),
                 checkboxInput(ns("ibd_dgeo_header"), "File has header row", value = TRUE),
+                uiOutput(ns("ibd_dgeo_file_status")),
                 tags$p(style = "color:#777;font-size:11px;",
                   "Only pairs present in the file are used; pairs you deleted from the file are excluded from the analysis.")
               ),
@@ -202,7 +204,8 @@ isolation_by_distance_UI <- function(id) {
               radioButtons(ns("mt_sep"), "Separator:",
                 choices = c("Comma"=",", "Tab"="\t", "Semicolon"=";"),
                 selected = ",", inline = TRUE),
-              checkboxInput(ns("mt_header"), "File has header row", value = TRUE)
+              checkboxInput(ns("mt_header"), "File has header row", value = TRUE),
+              uiOutput(ns("mt_file_status"))
             ),
 
             conditionalPanel(
@@ -217,7 +220,8 @@ isolation_by_distance_UI <- function(id) {
                 radioButtons(ns("mt_extra_sep"), "Separator:",
                   choices = c("Comma"=",", "Tab"="\t", "Semicolon"=";"),
                   selected = ",", inline = TRUE),
-                checkboxInput(ns("mt_extra_header"), "File has header row", value = TRUE)
+                checkboxInput(ns("mt_extra_header"), "File has header row", value = TRUE),
+                uiOutput(ns("mt_extra_file_status"))
               )
             ),
 

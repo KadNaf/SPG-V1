@@ -1319,6 +1319,69 @@ server_null_alleles <- function(id, rv) {
           legend = list(x=0.02, y=0.98))
     })
 
+    # ── Save all files automatically to the chosen output folder (optional;
+    #    the .txt download buttons below always work regardless) ─────────────
+    #    Simplified vs. the previous version: a single "Home" root (dropped
+    #    the confusing "R installation" entry) and much clearer wording about
+    #    what "this computer" means, since this app is normally run locally.
+    volumes_r <- c(Home = path.expand("~"))
+    shinyFiles::shinyDirChoose(input, "out_dir_browse", roots = volumes_r, session = session)
+
+    out_dir_r <- reactive({
+      sel <- input$out_dir_browse
+      if (is.null(sel) || identical(sel, 0)) return(NULL)
+      tryCatch(shinyFiles::parseDirPath(volumes_r, sel), error = function(e) NULL)
+    })
+
+    observeEvent(input$out_dir_browse, {
+      d <- out_dir_r()
+      if (!is.null(d) && length(d) && nzchar(d))
+        updateTextInput(session, "out_dir_display", value = d)
+    })
+
+    observeEvent(results_r(), {
+      dir <- trimws(input$out_dir_display %||% "")
+      if (!nzchar(dir) || !dir.exists(dir)) return(invisible(NULL))
+      tryCatch({
+        d1 <- file1_data(); d2 <- file2_data(); d3 <- file3_data()
+        d4 <- file4_data(); d5 <- file5_data()
+
+        write_with_header(c(d1$header, "Section 1: p_nulls per locus x population",
+                             "N_exp_blanks: expected number of null homozygotes = N * p_nulls^2", ""),
+                           d1$t1, file.path(dir, out_filename("null_allele_frequencies")), sep="\t")
+        write("", file = file.path(dir, out_filename("null_allele_frequencies")), append = TRUE)
+        write("Section 2: N-weighted mean per locus",
+              file = file.path(dir, out_filename("null_allele_frequencies")), append = TRUE)
+        write.table(d1$t2, file = file.path(dir, out_filename("null_allele_frequencies")),
+                    sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE, col.names = TRUE)
+
+        write_with_header(d2$header, d2$data, file.path(dir, out_filename("global_FST_ENA_CI")), sep="\t")
+        write_with_header(d3$header, d3$data, file.path(dir, out_filename("pairwise_long_format")), sep="\t")
+
+        con4 <- file(file.path(dir, out_filename("per_locus_half_matrices")), open="w", encoding="UTF-8")
+        writeLines(d4$header, con=con4, useBytes=TRUE)
+        for (loc in d4$markers) {
+          for (sc in c("FST_raw","FST_ENA")) {
+            writeLines(half_matrix_txt(d4$fst_df, sc, d4$pops, loc), con=con4, useBytes=TRUE)
+            writeLines("", con=con4)
+          }
+          for (sc in c("DCSE_raw","DCSE_INA")) {
+            writeLines(half_matrix_txt(d4$dc_df, sc, d4$pops, loc), con=con4, useBytes=TRUE)
+            writeLines("", con=con4)
+          }
+        }
+        close(con4)
+
+        write_with_header(d5$header, d5$data, file.path(dir, out_filename("bootstrap_distributions")), sep="\t")
+
+        showNotification(
+          paste0("Saved 5 files to: ", dir), type = "message", duration = 6)
+      }, error = function(e) {
+        showNotification(paste0("Could not save to folder: ", conditionMessage(e)),
+                          type = "error", duration = 8)
+      })
+    }, ignoreInit = TRUE)
+
     # ── Show the actual computed filename on each output-file card ────────────
     output$ui_filename_1 <- renderUI(tags$code(out_filename("null_allele_frequencies")))
     output$ui_filename_2 <- renderUI(tags$code(out_filename("global_FST_ENA_CI")))
@@ -1346,12 +1409,14 @@ server_null_alleles <- function(id, rv) {
       r <- tryCatch(results_r(), error = function(e) NULL)
       if (is.null(r)) return(NULL)
       ci_pct <- paste0(round((1-r$alpha)*100,3),"%")
+      dir <- trimws(input$out_dir_display %||% "")
       tags$div(class="na-info", style="margin-top:.5rem;",
         icon("check-circle"), " ",
         tags$strong("Computation complete."),
         sprintf(" %d loci \u00b7 %d populations \u00b7 %d loci-replicates \u00b7 %d sub-sample-replicates \u00b7 %s CI.",
                 length(r$markers), length(r$pops), r$nboot, r$nboot_subs %||% r$nboot, ci_pct),
-        " Use the .txt buttons below each result to download the 5 output files."
+        if (nzchar(dir)) sprintf(" 5 files saved to %s.", dir)
+        else " Use the .txt buttons below each result to download the 5 output files."
       )
     })
 
