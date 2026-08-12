@@ -742,6 +742,7 @@ server_isolation_by_distance <- function(id, rv) {
       m_y <- .mt_build_square(tmp, "P1", "P2", "Y", all_labels)
 
       n_perm <- as.integer(input$mt_n_perm); stat <- input$mt_stat
+      set.seed(suppressWarnings(as.integer(input$mt_seed %||% 67144630)))
       withProgress(message = "Running Mantel test\u2026", value = 0.2, {
         # BUGFIX: this used to be called as (m_y, m_x), which silently swapped
         # X and Y internally — for the "b" (regression slope) statistic this
@@ -798,14 +799,14 @@ server_isolation_by_distance <- function(id, rv) {
                      "Slope b (Y ~ X)", "Intercept", "R\u00b2",
                      "p-value formula",
                      "p (one-sided, positive assoc.)", "p (one-sided, negative assoc.)",
-                     "Pairs used (n)", "Common populations (N)", "Permutations"),
+                     "Pairs used (n)", "Common populations (N)", "Permutations", "Random seed"),
         Value = c(r$x_label, r$y_label, r$stat_label, .fmt_stat(r$stat_obs),
                   .fmt_stat(r$slope), .fmt_stat(r$intercept),
                   sprintf("%.4f", r$r2),
                   if (identical(input$mt_p_formula, "plain")) "b/m (Genepop/Fstat)" else "(b+1)/(m+1) (vegan/ade4)",
                   if (is.na(r$p_pos)) "NA" else sprintf("%.4f", r$p_pos),
                   if (is.na(r$p_neg)) "NA" else sprintf("%.4f", r$p_neg),
-                  r$n_pairs, length(r$common), length(r$perm_stats)),
+                  r$n_pairs, length(r$common), length(r$perm_stats), input$mt_seed %||% 67144630),
         stringsAsFactors = FALSE
       )
       DT::datatable(d, rownames = FALSE,
@@ -912,6 +913,7 @@ server_isolation_by_distance <- function(id, rv) {
       m_y <- .mt_build_square(tmp, "P1", "P2", "Y", all_labels)
 
       n_perm <- as.integer(input$gf_n_perm); stat <- input$gf_stat
+      set.seed(suppressWarnings(as.integer(input$gf_seed %||% 67144630)))
       withProgress(message = "Running Mantel test (Genepop/Fstat convention)\u2026", value = 0.2, {
         res <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = stat, p_formula = "plain")
         setProgress(1.0)
@@ -928,13 +930,13 @@ server_isolation_by_distance <- function(id, rv) {
         Quantity = c("X variable", "Y variable", "Statistic", "Observed value",
                      "Slope b (Y ~ X)", "Intercept", "R\u00b2", "p-value formula",
                      "p (one-sided, positive assoc.)", "p (one-sided, negative assoc.)",
-                     "Pairs used (n)", "Common populations (N)", "Permutations"),
+                     "Pairs used (n)", "Common populations (N)", "Permutations", "Random seed"),
         Value = c(r$x_label, r$y_label, r$stat_label, .fmt_stat(r$stat_obs),
                   .fmt_stat(r$slope), .fmt_stat(r$intercept),
                   sprintf("%.4f", r$r2), "b/m (Genepop/Fstat, no +1)",
                   if (is.na(r$p_pos)) "NA" else sprintf("%.4f", r$p_pos),
                   if (is.na(r$p_neg)) "NA" else sprintf("%.4f", r$p_neg),
-                  r$n_pairs, length(r$common), length(r$perm_stats)),
+                  r$n_pairs, length(r$common), length(r$perm_stats), input$gf_seed %||% 67144630),
         stringsAsFactors = FALSE
       )
       DT::datatable(d, rownames = FALSE,
