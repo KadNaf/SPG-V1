@@ -1324,7 +1324,10 @@ server_null_alleles <- function(id, rv) {
     #    Simplified vs. the previous version: a single "Home" root (dropped
     #    the confusing "R installation" entry) and much clearer wording about
     #    what "this computer" means, since this app is normally run locally.
-    volumes_r <- c(Home = path.expand("~"))
+    # All drives/volumes on this computer (e.g. C:, D:, USB drives on Windows;
+    # mounted volumes on macOS/Linux), plus Home as a convenient shortcut —
+    # so the user can save output files anywhere on their PC, not just Home.
+    volumes_r <- c(Home = path.expand("~"), shinyFiles::getVolumes()())
     shinyFiles::shinyDirChoose(input, "out_dir_browse", roots = volumes_r, session = session)
 
     out_dir_r <- reactive({

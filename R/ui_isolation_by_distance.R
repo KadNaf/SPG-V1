@@ -177,13 +177,19 @@ isolation_by_distance_UI <- function(id) {
             "valid when either matrix is incomplete. Statistic: Pearson's r or Spearman's rho ",
             "(Fstat convention) or the slope of the Rousset (1997) regression (Genepop convention ",
             "for IBD). ",
-            "One-sided p-value = (b+1)/(m+1), b = number of permuted statistics \u2265 observed.",
-            "<br><b>If your numbers don't match Fstat:</b> Fstat's own Isolation-by-Distance Mantel test ",
-            "uses the regression <b>slope b</b> (not Pearson r) of <b>F_R = FST/(1-FST)</b> against ",
-            "<b>ln(distance)</b> (2D habitat) or raw distance (1D) \u2014 make sure you selected ",
-            "\"Regression slope (Rousset)\", picked <code>FR</code>/<code>FR_raw</code> as Y, and ticked ",
-            "\"ln(transform) X\" if comparing to a 2D Fstat run. Also check the Exclude-pairs field is empty ",
-            "if Fstat used every pair."
+            "One-sided p-value = (b+1)/(m+1), b = number of permuted statistics \u2265 observed. ",
+            "A raw <b>Mantel Z</b> (uncentred sum of cross-products, Mantel's 1967 original statistic) ",
+            "is also available if Fstat reports that instead of a correlation \u2014 its p-value is ",
+            "identical to Pearson r's (same permutation test, just a different scale).",
+            "<br><b>If your numbers still don't match Fstat, check this first:</b> the single most likely ",
+            "cause is not the Mantel test itself but the <b>FST values being compared are not the same</b>. ",
+            "This tab's \"internal\" data source uses <b>FST-ENA</b> (EM/FreeNA null-allele-corrected), which ",
+            "Fstat does not compute on its own \u2014 a vanilla Fstat run reports uncorrected FST. To isolate ",
+            "the source of any remaining mismatch: (1) try <b>FR_raw</b> (uncorrected) instead of <b>FR</b>; ",
+            "(2) as a direct test of this tab's math, pick \"Upload external column file\", load Fstat's own ",
+            "exported pairwise FST + distance values, and run the Mantel test on THAT data \u2014 if the ",
+            "statistic then matches Fstat's own output, the Mantel engine is confirmed correct and any earlier ",
+            "mismatch was in the FST estimator, not here."
           ))
         ),
 
@@ -240,9 +246,11 @@ isolation_by_distance_UI <- function(id) {
               column(4,
                 radioButtons(ns("mt_stat"), "Statistic:",
                   choices = c("Pearson r" = "r", "Spearman rho" = "spearman",
-                              "Regression slope (Rousset)" = "b"),
+                              "Regression slope (Rousset)" = "b",
+                              "Mantel Z (raw sum, Mantel 1967)" = "z"),
                   selected = "r"),
-                checkboxInput(ns("mt_log_x"), "ln(transform) X", value = FALSE)
+                checkboxInput(ns("mt_log_x"), "ln(transform) X", value = FALSE),
+                uiOutput(ns("mt_double_log_warning"))
               ),
               column(4,
                 numericInput(ns("mt_n_perm"), "Permutations:",

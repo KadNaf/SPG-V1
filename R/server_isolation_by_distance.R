@@ -540,6 +540,7 @@ server_isolation_by_distance <- function(id, rv) {
         if (sum(ok) < 3L) return(NA_real_)
         if (stat == "b") unname(coef(lm(yy[ok] ~ xx[ok]))[2L])
         else if (stat == "spearman") suppressWarnings(cor(xx[ok], yy[ok], method = "spearman"))
+        else if (stat == "z") sum(xx[ok] * yy[ok])   # Mantel's (1967) original raw cross-product sum
         else suppressWarnings(cor(xx[ok], yy[ok]))
       }
       ok_obs   <- is.finite(x_all) & is.finite(y_all)
@@ -656,6 +657,14 @@ server_isolation_by_distance <- function(id, rv) {
                                         if (length(cols) >= 2L) cols[2] else NULL))
     })
 
+    output$mt_double_log_warning <- renderUI({
+      if (isTRUE(input$mt_log_x) && grepl("ln", input$mt_col_x %||% "", ignore.case = TRUE)) {
+        tags$p(style="color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:4px;padding:4px 6px;font-size:11px;margin-top:6px;",
+          icon("exclamation-triangle"), " ", tags$strong(input$mt_col_x), " already looks log-transformed \u2014 ",
+          "ticking this box will apply ln() a second time. Untick it, or pick the raw (non-ln) distance column instead.")
+      }
+    })
+
     mantel_result_r <- eventReactive(input$run_mantel, {
       df <- mt_base_df_r()
       shiny::req(input$mt_col_pop1, input$mt_col_pop2, input$mt_col_x, input$mt_col_y)
@@ -701,7 +710,8 @@ server_isolation_by_distance <- function(id, rv) {
       })
       res$x_label <- paste0(xcol, if (isTRUE(input$mt_log_x)) " (ln)" else "")
       res$y_label <- ycol
-      res$stat_label <- switch(stat, b = "Slope b", spearman = "Spearman rho", "Pearson r")
+      res$stat_label <- switch(stat, b = "Slope b", spearman = "Spearman rho",
+                                z = "Mantel Z (raw cross-product sum)", "Pearson r")
       res
     })
 
@@ -739,16 +749,19 @@ server_isolation_by_distance <- function(id, rv) {
 
     output$dt_mantel_summary <- DT::renderDT({
       r <- mantel_result_r()
+      p_two <- if (is.na(r$p_pos) || is.na(r$p_neg)) NA_real_ else min(1, 2 * min(r$p_pos, r$p_neg))
       d <- data.frame(
         Quantity = c("X variable", "Y variable", "Statistic", "Observed value",
                      "Slope b (Y ~ X)", "Intercept", "R\u00b2",
                      "p (one-sided, positive assoc.)", "p (one-sided, negative assoc.)",
+                     "p (two-sided)",
                      "Pairs used (n)", "Common populations (N)", "Permutations"),
         Value = c(r$x_label, r$y_label, r$stat_label, sprintf("%.6f", r$stat_obs),
                   sprintf("%.6f", r$slope), sprintf("%.6f", r$intercept),
                   sprintf("%.4f", r$r2),
                   if (is.na(r$p_pos)) "NA" else sprintf("%.4f", r$p_pos),
                   if (is.na(r$p_neg)) "NA" else sprintf("%.4f", r$p_neg),
+                  if (is.na(p_two)) "NA" else sprintf("%.4f", p_two),
                   r$n_pairs, length(r$common), length(r$perm_stats)),
         stringsAsFactors = FALSE
       )
