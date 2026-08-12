@@ -367,19 +367,7 @@ server_null_alleles <- function(id, rv) {
     }
 
     # ── CS distance — FIX: fi/fj, explicit base::pi ────────────────────────────
-    # Two aggregation conventions for the MULTILOCUS chord distance exist in
-    # the population-genetics literature/software, and they give genuinely
-    # different numbers on the same data:
-    #   "standard" (default here): take the square root PER LOCUS, then
-    #     average across loci — D_CH = mean_locus[ (2/pi)*sqrt(2*(1-csprod)) ].
-    #     This is the textbook chord-distance / PHYLIP GENDIST convention.
-    #   "hierfstat": the R package hierfstat's genet.dist(method="Dch") pools
-    #     the UNROOTED per-locus term 2*(1-csprod) across loci and applies
-    #     (2/pi) only ONCE at the very end — no per-locus square root at all:
-    #     D_CH = (2/pi) * mean_locus[ 2*(1-csprod) ]. Checked directly against
-    #     hierfstat's source (R/genetdist.R, method==1 branch) on 2026-08-12.
-    #   Use hierfstat_mode = TRUE to reproduce hierfstat's numbers exactly.
-    cs_distance <- function(freq_i, freq_j, hierfstat_mode = FALSE) {
+    cs_distance <- function(freq_i, freq_j) {
       alleles <- union(names(freq_i), names(freq_j))
       csprod  <- 0.0
       for (a in alleles) {
@@ -389,8 +377,7 @@ server_null_alleles <- function(id, rv) {
         if (fi > 0 && fj > 0) csprod <- csprod + sqrt(fi * fj)
       }
       if (csprod > 1.0) return(NA_real_)
-      if (hierfstat_mode) 2.0 * (1.0 - csprod)
-      else (2.0 / base::pi) * sqrt(2.0 * (1.0 - csprod))
+      (2.0 / base::pi) * sqrt(2.0 * (1.0 - csprod))
     }
 
     # ── INA frequency vector — Pascal ajustement_r ────────────────────────────
@@ -596,7 +583,7 @@ server_null_alleles <- function(id, rv) {
     # ══════════════════════════════════════════════════════════════════════════
     #  PAIRWISE DCSE (raw + INA) — FIX: make_ina_freq, ni_ci>0 only
     # ══════════════════════════════════════════════════════════════════════════
-    compute_dc_pairwise <- function(em_res, hierfstat_mode = FALSE) {
+    compute_dc_pairwise <- function(em_res) {
       markers <- names(em_res); pops <- names(em_res[[markers[1]]]); n_pops <- length(pops)
       if (n_pops < 2L) return(list(matrix_raw=NULL,matrix_ina=NULL,long=data.frame(),
                                    dc_raw=NULL,dc_ina=NULL,pairs=NULL))
@@ -617,14 +604,14 @@ server_null_alleles <- function(id, rv) {
             ni_ci <- ei$efpop-ei$n_absent; ni_cj <- ej$efpop-ej$n_absent
             pi_idx <- which(sapply(pairs, function(p) p[1]==pops[ii] && p[2]==pops[jj]))
             if (ni_ri>0L&&ni_rj>0L&&length(ei$genefreq_obs)>0&&length(ej$genefreq_obs)>0) {
-              d_raw <- cs_distance(ei$genefreq_obs, ej$genefreq_obs, hierfstat_mode)
+              d_raw <- cs_distance(ei$genefreq_obs, ej$genefreq_obs)
               if (!is.na(d_raw)) {
                 dc_sum_raw[jj,ii] <- dc_sum_raw[jj,ii]+d_raw
                 if (length(pi_idx)==1) dc_raw_ml[pi_idx,li] <- d_raw
               } else nloc_eff[jj,ii] <- nloc_eff[jj,ii]-1L
             } else nloc_eff[jj,ii] <- nloc_eff[jj,ii]-1L
             if (ni_ci>0L&&ni_cj>0L) {
-              d_ina <- cs_distance(make_ina_freq(ei), make_ina_freq(ej), hierfstat_mode)
+              d_ina <- cs_distance(make_ina_freq(ei), make_ina_freq(ej))
               if (!is.na(d_ina)) {
                 dc_sum_ina[jj,ii] <- dc_sum_ina[jj,ii]+d_ina
                 if (length(pi_idx)==1) dc_ina_ml[pi_idx,li] <- d_ina
@@ -633,16 +620,11 @@ server_null_alleles <- function(id, rv) {
           }
         }
       }
-      # In hierfstat_mode, cs_distance() returns the UNSCALED per-locus term,
-      # so the (2/pi) scaling that the standard mode already bakes in
-      # per-locus must instead be applied once, after averaging across loci
-      # — exactly matching hierfstat::genet.dist(method="Dch")'s own code.
-      final_scale <- if (hierfstat_mode) 2.0 / base::pi else 1.0
       mat_raw <- matrix(NA_real_,n_pops,n_pops,dimnames=list(pops,pops))
       mat_ina <- matrix(NA_real_,n_pops,n_pops,dimnames=list(pops,pops))
       for (ii in seq_len(n_pops-1L)) for (jj in seq(ii+1L,n_pops)) {
-        mat_raw[jj,ii] <- if(nloc_eff[jj,ii]  >0L) final_scale * dc_sum_raw[jj,ii]/nloc_eff[jj,ii]   else NA_real_
-        mat_ina[jj,ii] <- if(nloc_eff_c[jj,ii]>0L) final_scale * dc_sum_ina[jj,ii]/nloc_eff_c[jj,ii] else NA_real_
+        mat_raw[jj,ii] <- if(nloc_eff[jj,ii]  >0L) dc_sum_raw[jj,ii]/nloc_eff[jj,ii]   else NA_real_
+        mat_ina[jj,ii] <- if(nloc_eff_c[jj,ii]>0L) dc_sum_ina[jj,ii]/nloc_eff_c[jj,ii] else NA_real_
       }
       long_rows <- list()
       for (ii in seq_len(n_pops-1L)) for (jj in seq(ii+1L,n_pops))
@@ -657,7 +639,7 @@ server_null_alleles <- function(id, rv) {
     # ══════════════════════════════════════════════════════════════════════════
     #  PER-LOCUS x PAIR (FST + DCSE)
     # ══════════════════════════════════════════════════════════════════════════
-    compute_per_locus_pair <- function(em_res, hierfstat_mode = FALSE) {
+    compute_per_locus_pair <- function(em_res) {
       markers <- names(em_res); pops <- names(em_res[[markers[1]]])
       rows_fst <- rows_dc <- list()
       for (loc in markers) {
@@ -706,9 +688,9 @@ server_null_alleles <- function(id, rv) {
               stringsAsFactors=FALSE)
             # DCSE per locus
             d_raw_l <- if(ni_ri>0&&ni_rj>0&&length(ei$genefreq_obs)>0&&length(ej$genefreq_obs)>0)
-              cs_distance(ei$genefreq_obs,ej$genefreq_obs,hierfstat_mode) else NA_real_
+              cs_distance(ei$genefreq_obs,ej$genefreq_obs) else NA_real_
             d_ina_l <- if(ni_ci>0&&ni_cj>0)
-              cs_distance(make_ina_freq(ei),make_ina_freq(ej),hierfstat_mode) else NA_real_
+              cs_distance(make_ina_freq(ei),make_ina_freq(ej)) else NA_real_
             rows_dc[[length(rows_dc)+1L]] <- data.frame(
               Locus=loc, Pop1=pi_n, Pop2=pj_n,
               DCSE_raw=round(d_raw_l,6), DCSE_INA=round(d_ina_l,6),
@@ -928,11 +910,11 @@ server_null_alleles <- function(id, rv) {
 
         # 5. Pairwise DCSE
         setProgress(0.35, detail = "Pairwise DCSE and DCSE-INA...")
-        dc_pair <- compute_dc_pairwise(em_res, hierfstat_mode = identical(input$dcse_convention, "hierfstat"))
+        dc_pair <- compute_dc_pairwise(em_res)
 
         # 6. Per-locus x pair
         setProgress(0.45, detail = "Per-locus x pair statistics...")
-        per_locus_pair <- compute_per_locus_pair(em_res, hierfstat_mode = identical(input$dcse_convention, "hierfstat"))
+        per_locus_pair <- compute_per_locus_pair(em_res)
 
         # 7. Bootstrap over loci — global FST (vectorised, fast)
         setProgress(0.50, detail = sprintf("Bootstrap over loci — global FST (%d reps)...", nboot))
@@ -1038,7 +1020,6 @@ server_null_alleles <- function(id, rv) {
           boot_pair_dc      = boot_pair_dc_loci,
           nboot = nboot, nboot_subs = nboot_subs, alpha = alpha, ci = ci,
           seed = seed,
-          dcse_convention = if (identical(input$dcse_convention, "hierfstat")) "hierfstat" else "standard",
           treats = treats, markers = markers, pops = pops,
           em_res = em_res
         )
@@ -1103,11 +1084,6 @@ server_null_alleles <- function(id, rv) {
         if (fst_dcse) "INA correction (Including Null Alleles) - Chapuis & Estoup (2007) / FreeNA",
         if (fst_dcse) "FST: Weir & Cockerham (1984) unbiased moment estimator",
         if (fst_dcse) "DCSE: Cavalli-Sforza & Edwards (1967) chord genetic distance",
-        if (fst_dcse) paste0("DCSE multilocus averaging convention: ",
-          if (identical(r$dcse_convention, "hierfstat"))
-            "hierfstat R package (genet.dist, method=\"Dch\") \u2014 (2/pi) applied once after pooling loci"
-          else
-            "standard/textbook (2/pi)*sqrt(...) per locus, then averaged \u2014 matches PHYLIP GENDIST"),
         if (fst_dcse) paste0("Bootstrap replicates (over loci): ", r$nboot),
         if (fst_dcse) paste0("Bootstrap replicates (over sub-samples): ", r$nboot_subs %||% r$nboot),
         if (fst_dcse) paste0("Bootstrap random seed (set.seed): ", r$seed %||% "n/a",
@@ -1348,7 +1324,8 @@ server_null_alleles <- function(id, rv) {
     #    Simplified vs. the previous version: a single "Home" root (dropped
     #    the confusing "R installation" entry) and much clearer wording about
     #    what "this computer" means, since this app is normally run locally.
-    volumes_r <- c(Home = path.expand("~"))
+    
+    volumes_r <- c(Home = path.expand("~"), "R installation" = R.home(), shinyFiles::getVolumes()())
     shinyFiles::shinyDirChoose(input, "out_dir_browse", roots = volumes_r, session = session)
 
     out_dir_r <- reactive({
