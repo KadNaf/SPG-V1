@@ -136,6 +136,23 @@ null_alleles_UI <- function(id) {
 
         tags$hr(),
 
+        h4(icon("ruler-combined"), "(1b) DCSE (chord distance) convention"),
+        radioButtons(ns("dcse_convention"), NULL,
+          choices = c("Standard \u2014 average per-locus chord distances (PHYLIP GENDIST convention)" = "standard",
+                      "hierfstat R package \u2014 pool loci before scaling (genet.dist, method=\"Dch\")" = "hierfstat"),
+          selected = "standard"),
+        tags$p(style = "color:#666;font-size:12px;",
+          icon("info-circle"), " Two conventions exist in the literature/software for averaging the ",
+          "Cavalli-Sforza & Edwards chord distance across loci, and they give ", tags$strong("different numbers"),
+          " on the same data: the standard formula takes the square root ", tags$strong("per locus"), " then averages ",
+          "(D_CH = mean", tags$sub("locus"), "[(2/\u03c0)\u00b7\u221a(2(1\u2212\u03a3\u221a(p\u00b7q)))]); the R package ",
+          tags$strong("hierfstat"), "'s ", tags$code("genet.dist(method=\"Dch\")"), " instead pools the ",
+          "unrooted per-locus term across loci and applies the (2/\u03c0) scaling only once at the end. If you're ",
+          "cross-checking DCSE/DCSE-INA values (or an IBD/Mantel test built on them) against hierfstat, pick the ",
+          "hierfstat option here to reproduce its numbers exactly; otherwise the standard/textbook convention is the default."),
+
+        tags$hr(),
+
         h4(icon("dice"), "(2) Bootstrap parameters"),
         fluidRow(
           column(3,
