@@ -419,6 +419,36 @@ BEGIN_RCPP
 END_RCPP
 }
 
+// classic_partial_mantel_cpp
+Rcpp::List classic_partial_mantel_cpp(Rcpp::NumericMatrix Xmat, Rcpp::NumericMatrix Ymat, Rcpp::NumericMatrix Zmat, int nperm);
+RcppExport SEXP _shinypopgen_classic_partial_mantel_cpp(SEXP XmatSEXP, SEXP YmatSEXP, SEXP ZmatSEXP, SEXP npermSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type Xmat(XmatSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type Ymat(YmatSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type Zmat(ZmatSEXP);
+    Rcpp::traits::input_parameter< int >::type nperm(npermSEXP);
+    rcpp_result_gen = Rcpp::wrap(classic_partial_mantel_cpp(Xmat, Ymat, Zmat, nperm));
+    return rcpp_result_gen;
+END_RCPP
+}
+
+// mrm_cpp
+Rcpp::List mrm_cpp(Rcpp::NumericMatrix Ymat, Rcpp::List Xmats, int nperm, bool standardize);
+RcppExport SEXP _shinypopgen_mrm_cpp(SEXP YmatSEXP, SEXP XmatsSEXP, SEXP npermSEXP, SEXP standardizeSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type Ymat(YmatSEXP);
+    Rcpp::traits::input_parameter< Rcpp::List >::type Xmats(XmatsSEXP);
+    Rcpp::traits::input_parameter< int >::type nperm(npermSEXP);
+    Rcpp::traits::input_parameter< bool >::type standardize(standardizeSEXP);
+    rcpp_result_gen = Rcpp::wrap(mrm_cpp(Ymat, Xmats, nperm, standardize));
+    return rcpp_result_gen;
+END_RCPP
+}
+
 static const R_CallMethodDef CallEntries[] = {
     {"_shinypopgen_wc_fis_by_pop", (DL_FUNC) &_shinypopgen_wc_fis_by_pop, 3},
     {"_shinypopgen_boot_indiv_wc_fis_by_pop", (DL_FUNC) &_shinypopgen_boot_indiv_wc_fis_by_pop, 6},
@@ -447,6 +477,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_shinypopgen_ld_pvalues_cpp", (DL_FUNC) &_shinypopgen_ld_pvalues_cpp, 5},
     {"_shinypopgen_mantel_genepop_cpp", (DL_FUNC) &_shinypopgen_mantel_genepop_cpp, 4},
     {"_shinypopgen_mantel_plus1_cpp", (DL_FUNC) &_shinypopgen_mantel_plus1_cpp, 3},
+    {"_shinypopgen_classic_partial_mantel_cpp", (DL_FUNC) &_shinypopgen_classic_partial_mantel_cpp, 4},
+    {"_shinypopgen_mrm_cpp", (DL_FUNC) &_shinypopgen_mrm_cpp, 4},
     {NULL, NULL, 0}
 };
 

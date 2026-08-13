@@ -467,10 +467,17 @@ isolation_by_distance_UI <- function(id) {
                 choices = c("Pearson" = "pearson", "Spearman" = "spearman"), selected = "pearson", inline = TRUE)
             ),
             numericInput(ns("pm_n_perm"), "Permutations:", value = 999, min = 99, max = 20000, step = 100),
+            radioButtons(ns("pm_engine"), "Engine:",
+              choices = c("C++ \u2014 native, faster" = "cpp",
+                          "R \u2014 portable" = "r"),
+              selected = "cpp"),
             tags$p(style="color:#777;font-size:11px;",
-              "MRM permutes the response (Y) matrix; classic mode permutes the variable-of-interest (X) matrix ",
-              "\u2014 matching vegan/ade4's own convention. Both use joint row/column relabelling, valid on ",
-              "incomplete data."),
+              "Applies to whichever method is selected above. MRM permutes the response (Y) matrix; classic ",
+              "mode permutes the variable-of-interest (X) matrix. Both use joint row/column relabelling, ",
+              "valid on incomplete data."),
+            tags$div(style = "display:none;",
+              numericInput(ns("pm_seed"), "Random seed:", value = 67144630, min = 1, max = 2147483647, step = 1)
+            ),
             actionButton(ns("run_partial_mantel"), "Run Partial Mantel",
                          icon = icon("random"), class = "btn-action-primary btn-block",
                          style = "font-weight:bold;")

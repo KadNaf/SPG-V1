@@ -1231,18 +1231,36 @@ server_isolation_by_distance <- function(id, rv) {
           shiny::need(length(unique(c(ycol, xcol, zcol))) == 3L,
             "Y, X and Z must be three different columns.")
         )
-        cr <- .classic_partial_mantel(build(xcol), build(ycol), build(zcol),
-                                       method = input$pm_classic_stat,
-                                       n_perm = as.integer(input$pm_n_perm),
-                                       progress_label = "Running classic partial Mantel (vegan/ade4-style)\u2026",
-                                       p_formula = input$mt_p_formula %||% "plus1")
+        method <- input$pm_classic_stat
+        seed <- suppressWarnings(as.integer(input$pm_seed %||% 67144630))
+        n_perm <- as.integer(input$pm_n_perm)
+
+        if (identical(input$pm_engine, "cpp")) {
+          mx <- build(xcol); my <- build(ycol); mz <- build(zcol)
+          if (identical(method, "spearman")) { mx <- .rank_matrix(mx); my <- .rank_matrix(my); mz <- .rank_matrix(mz) }
+          set.seed(seed)
+          withProgress(message = "Running classic partial Mantel (C++ engine)\u2026", value = 0.3, {
+            cr_raw <- classic_partial_mantel_cpp(mx, my, mz, n_perm)
+            setProgress(1.0)
+          })
+          cr <- list(statistic = cr_raw$statistic, rxy = cr_raw$rxy, rxz = cr_raw$rxz, ryz = cr_raw$ryz,
+                     p_pos = cr_raw$p_pos, p_neg = cr_raw$p_neg, n_used = cr_raw$n_pairs,
+                     n_pops = cr_raw$n_pops, perm_stats = as.numeric(cr_raw$perm_stats), method = method)
+        } else {
+          set.seed(seed)
+          cr <- .classic_partial_mantel(build(xcol), build(ycol), build(zcol),
+                                         method = method, n_perm = n_perm,
+                                         progress_label = "Running classic partial Mantel (R engine)\u2026",
+                                         p_formula = "plus1")
+        }
         p_two <- if (is.na(cr$p_pos) || is.na(cr$p_neg)) NA_real_ else min(1, 2 * min(cr$p_pos, cr$p_neg))
         tbl <- data.frame(
-          Quantity = c("Variable of interest (X)", "Response (Y)", "Control (Z)", "Correlation method",
+          Quantity = c("Engine", "Variable of interest (X)", "Response (Y)", "Control (Z)", "Correlation method",
                        "r(X,Y)", "r(X,Z)", "r(Y,Z)", "Partial r (X,Y | Z)",
                        "p (one-sided, positive)", "p (one-sided, negative)", "p (two-sided)",
                        "Dyads used", "Common populations", "Permutations"),
-          Value = c(xcol, ycol, zcol, cr$method,
+          Value = c(if (identical(input$pm_engine, "cpp")) "C++ (native)" else "R (portable)",
+                    xcol, ycol, zcol, cr$method,
                     sprintf("%.6f", cr$rxy), sprintf("%.6f", cr$rxz), sprintf("%.6f", cr$ryz),
                     sprintf("%.6f", cr$statistic),
                     if (is.na(cr$p_pos)) "NA" else sprintf("%.4f", cr$p_pos),
@@ -1255,7 +1273,8 @@ server_isolation_by_distance <- function(id, rv) {
                             3, 3, dimnames = list(c(xcol, ycol, zcol), c(xcol, ycol, zcol)))
         return(list(method = "classic", table = tbl, corr_mat = corr_mat,
                     y_label = ycol, x_labels = xcol, z_label = zcol,
-                    statistic = cr$statistic, p_pos = cr$p_pos, perm_stats = cr$perm_stats))
+                    statistic = cr$statistic, p_pos = cr$p_pos, perm_stats = cr$perm_stats,
+                    engine = input$pm_engine %||% "r"))
       }
 
       # ── MRM (default) ──────────────────────────────────────────────────
@@ -1263,7 +1282,7 @@ server_isolation_by_distance <- function(id, rv) {
 
       shiny::validate(
         shiny::need(length(xcols) >= 1L, "Choose at least one predictor matrix."),
-        shiny::need(length(xcols) <= 10L, "Up to 10 predictor matrices are supported (Fstat convention)."),
+        shiny::need(length(xcols) <= 10L, "Up to 10 predictor matrices are supported."),
         shiny::need(!(ycol %in% xcols), "Y cannot also be used as a predictor."),
         shiny::need(all(c(p1c, p2c, ycol, xcols) %in% names(df)), "Selected columns not found.")
       )
@@ -1288,46 +1307,72 @@ server_isolation_by_distance <- function(id, rv) {
 
       n_perm   <- as.integer(input$pm_n_perm)
       use_std  <- isTRUE(input$pm_standardize)
+      seed     <- suppressWarnings(as.integer(input$pm_seed %||% 67144630))
 
-      fit_once <- function(yv) {
-        okk <- compute_ok(yv)
-        if (sum(okk) < (length(xcols) + 3L)) return(NULL)
-        d <- as.data.frame(x_all)[okk, , drop = FALSE]; names(d) <- xcols
-        d$Y <- yv[okk]
-        if (use_std) { d$Y <- .pm_std(d$Y); for (nmc in xcols) d[[nmc]] <- .pm_std(d[[nmc]]) }
-        m <- tryCatch(lm(Y ~ ., data = d), error = function(e) NULL)
-        if (is.null(m)) return(NULL)
-        list(coef = coef(m)[-1L], r2 = summary(m)$r.squared)
-      }
-
-      obs <- fit_once(y_all)
-      shiny::validate(shiny::need(!is.null(obs), "Could not fit the model (check for collinear predictors)."))
-
-      withProgress(message = "Running partial Mantel (MRM)\u2026", value = 0.1, {
-        perm_coef <- matrix(NA_real_, n_perm, length(xcols), dimnames = list(NULL, xcols))
-        perm_r2   <- numeric(n_perm)
-        report_every <- max(1L, round(n_perm / 20))
-        for (b in seq_len(n_perm)) {
-          perm <- sample.int(n)
-          y_p <- mat_y_c[perm, perm, drop = FALSE][lower_idx]
-          fp  <- fit_once(y_p)
-          if (!is.null(fp)) { perm_coef[b, ] <- fp$coef[xcols]; perm_r2[b] <- fp$r2 }
-          if (b %% report_every == 0L) setProgress(0.1 + 0.85 * b / n_perm)
+      if (identical(input$pm_engine, "cpp")) {
+        mats_x_common <- lapply(mats_x, function(m) m[common, common, drop = FALSE])
+        set.seed(seed)
+        withProgress(message = "Running partial Mantel (MRM, C++ engine)\u2026", value = 0.3, {
+          mrm_res <- mrm_cpp(mat_y_c, mats_x_common, n_perm, use_std)
+          setProgress(1.0)
+        })
+        obs_coef <- stats::setNames(as.numeric(mrm_res$obs_coef), xcols)
+        perm_coef <- mrm_res$perm_coef; colnames(perm_coef) <- xcols
+        perm_r2 <- as.numeric(mrm_res$perm_r2)
+        tbl <- do.call(rbind, lapply(xcols, function(nmc) {
+          pc <- perm_coef[, nmc]; pc <- pc[is.finite(pc)]
+          b_obs <- unname(obs_coef[nmc]); m_valid <- length(pc)
+          p_pos <- if (m_valid > 0L) (sum(pc >= b_obs) + 1) / (m_valid + 1) else NA_real_
+          p_neg <- if (m_valid > 0L) (sum(pc <= b_obs) + 1) / (m_valid + 1) else NA_real_
+          data.frame(Predictor = nmc, Coefficient = b_obs, p_positive = p_pos, p_negative = p_neg,
+                     stringsAsFactors = FALSE)
+        }))
+        r2v <- perm_r2[is.finite(perm_r2)]
+        p_r2 <- if (length(r2v) > 0L) (sum(r2v >= mrm_res$obs_r2) + 1) / (length(r2v) + 1) else NA_real_
+        r2_obs <- mrm_res$obs_r2; n_dyads_used <- mrm_res$n_pairs
+      } else {
+        set.seed(seed)
+        fit_once <- function(yv) {
+          okk <- compute_ok(yv)
+          if (sum(okk) < (length(xcols) + 3L)) return(NULL)
+          d <- as.data.frame(x_all)[okk, , drop = FALSE]; names(d) <- xcols
+          d$Y <- yv[okk]
+          if (use_std) { d$Y <- .pm_std(d$Y); for (nmc in xcols) d[[nmc]] <- .pm_std(d[[nmc]]) }
+          m <- tryCatch(lm(Y ~ ., data = d), error = function(e) NULL)
+          if (is.null(m)) return(NULL)
+          list(coef = coef(m)[-1L], r2 = summary(m)$r.squared)
         }
-      })
 
-      tbl <- do.call(rbind, lapply(xcols, function(nmc) {
-        pc <- perm_coef[, nmc]; pc <- pc[is.finite(pc)]
-        b_obs   <- unname(obs$coef[nmc])
-        m_valid <- length(pc)
-        p_pos <- if (m_valid > 0L) (sum(pc >= b_obs) + 1) / (m_valid + 1) else NA_real_
-        p_neg <- if (m_valid > 0L) (sum(pc <= b_obs) + 1) / (m_valid + 1) else NA_real_
-        data.frame(Predictor = nmc, Coefficient = b_obs, p_positive = p_pos, p_negative = p_neg,
-                   stringsAsFactors = FALSE)
-      }))
+        obs <- fit_once(y_all)
+        shiny::validate(shiny::need(!is.null(obs), "Could not fit the model (check for collinear predictors)."))
 
-      r2v  <- perm_r2[is.finite(perm_r2)]
-      p_r2 <- if (length(r2v) > 0L) (sum(r2v >= obs$r2) + 1) / (length(r2v) + 1) else NA_real_
+        withProgress(message = "Running partial Mantel (MRM, R engine)\u2026", value = 0.1, {
+          perm_coef <- matrix(NA_real_, n_perm, length(xcols), dimnames = list(NULL, xcols))
+          perm_r2   <- numeric(n_perm)
+          report_every <- max(1L, round(n_perm / 20))
+          for (b in seq_len(n_perm)) {
+            perm <- sample.int(n)
+            y_p <- mat_y_c[perm, perm, drop = FALSE][lower_idx]
+            fp  <- fit_once(y_p)
+            if (!is.null(fp)) { perm_coef[b, ] <- fp$coef[xcols]; perm_r2[b] <- fp$r2 }
+            if (b %% report_every == 0L) setProgress(0.1 + 0.85 * b / n_perm)
+          }
+        })
+
+        tbl <- do.call(rbind, lapply(xcols, function(nmc) {
+          pc <- perm_coef[, nmc]; pc <- pc[is.finite(pc)]
+          b_obs   <- unname(obs$coef[nmc])
+          m_valid <- length(pc)
+          p_pos <- if (m_valid > 0L) (sum(pc >= b_obs) + 1) / (m_valid + 1) else NA_real_
+          p_neg <- if (m_valid > 0L) (sum(pc <= b_obs) + 1) / (m_valid + 1) else NA_real_
+          data.frame(Predictor = nmc, Coefficient = b_obs, p_positive = p_pos, p_negative = p_neg,
+                     stringsAsFactors = FALSE)
+        }))
+
+        r2v  <- perm_r2[is.finite(perm_r2)]
+        p_r2 <- if (length(r2v) > 0L) (sum(r2v >= obs$r2) + 1) / (length(r2v) + 1) else NA_real_
+        r2_obs <- obs$r2; n_dyads_used <- sum(ok0)
+      }
 
       corr_df <- as.data.frame(x_all)[ok0, , drop = FALSE]; names(corr_df) <- xcols
       corr_df$Y <- y_all[ok0]
@@ -1335,8 +1380,9 @@ server_isolation_by_distance <- function(id, rv) {
       names(corr_df)[1] <- ycol
       corr_mat <- suppressWarnings(cor(corr_df, use = "pairwise.complete.obs"))
 
-      list(method = "mrm", table = tbl, r2 = obs$r2, p_r2 = p_r2, n_dyads = sum(ok0), n_pops = n,
-           standardized = use_std, y_label = ycol, x_labels = xcols, corr_mat = corr_mat)
+      list(method = "mrm", table = tbl, r2 = r2_obs, p_r2 = p_r2, n_dyads = n_dyads_used, n_pops = n,
+           standardized = use_std, y_label = ycol, x_labels = xcols, corr_mat = corr_mat,
+           engine = input$pm_engine %||% "r")
     })
 
     output$dt_partial_mantel <- DT::renderDT({
@@ -1360,15 +1406,14 @@ server_isolation_by_distance <- function(id, rv) {
       r <- partial_mantel_result_r()
       if (identical(r$method, "classic")) {
         return(tags$div(style = "margin-top:8px; font-size:13px; color:#333;",
-          "Classic partial Mantel (vegan/ade4-style): partial correlation of ", tags$strong(r$y_label),
-          " with ", tags$strong(r$x_labels), " while controlling for ", tags$strong(r$z_label), ".", tags$br(),
-          "This is the exact statistic reported by vegan's ", tags$code("mantel.partial()"),
-          " and reproducible in ade4 via ", tags$code("mantel.rtest()"), " on residuals \u2014 directly ",
-          "comparable to those packages' (or Fstat's, if it uses the same formula) output."
+          "Classic partial Mantel: partial correlation of ", tags$strong(r$y_label),
+          " with ", tags$strong(r$x_labels), " while controlling for ", tags$strong(r$z_label), " (",
+          if (identical(r$engine, "cpp")) "C++ engine" else "R engine", ")."
         ))
       }
       tags$div(style = "margin-top:8px; font-size:13px; color:#333;",
-        sprintf("Full model: R\u00b2 = %.4f, p = %s (permutation test on R\u00b2)",
+        sprintf("Full model (%s engine): R\u00b2 = %.4f, p = %s (permutation test on R\u00b2)",
+                if (identical(r$engine, "cpp")) "C++" else "R",
                 r$r2, if (is.na(r$p_r2)) "NA" else formatC(r$p_r2, format = "f", digits = 4)), tags$br(),
         sprintf("Dyads used: %d \u2014 sub-samples in common: %d", r$n_dyads, r$n_pops), tags$br(),
         sprintf("Response: %s \u2014 Predictors: %s", r$y_label, paste(r$x_labels, collapse = ", "))

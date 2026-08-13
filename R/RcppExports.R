@@ -109,3 +109,11 @@ mantel_plus1_cpp <- function(Xmat, Ymat, nperm) {
     .Call(`_shinypopgen_mantel_plus1_cpp`, Xmat, Ymat, nperm)
 }
 
+classic_partial_mantel_cpp <- function(Xmat, Ymat, Zmat, nperm) {
+    .Call(`_shinypopgen_classic_partial_mantel_cpp`, Xmat, Ymat, Zmat, nperm)
+}
+
+mrm_cpp <- function(Ymat, Xmats, nperm, standardize) {
+    .Call(`_shinypopgen_mrm_cpp`, Ymat, Xmats, nperm, standardize)
+}
+
