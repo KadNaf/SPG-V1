@@ -170,24 +170,25 @@ isolation_by_distance_UI <- function(id) {
           HTML(paste0(
             "Generic Mantel permutation test between any two pairwise distances (genetic, ",
             "geographic, temporal, ecological or categorical), using a table of pairs in rows / ",
-            "distances in columns (RT, Manly 2018; Fstat 2.9.4 convention). Supports ",
+            "distances in columns. Supports ",
             "<b>rectangular matrices</b>: pairs can be excluded (e.g. to keep contemporaneous ",
             "pairs only) without dropping every pair involving the corresponding sub-samples. ",
             "Permutation is by <b>joint row/column relabelling</b> of one matrix, which stays ",
-            "valid when either matrix is incomplete. Statistic: Pearson's r or Spearman's rho ",
-            "(Fstat convention) or the slope of the Rousset (1997) regression (Genepop convention ",
-            "for IBD). ",
-            "One-sided p-value = (b+1)/(m+1) by default (b = number of permuted statistics \u2265 observed) ",
-            "\u2014 matches vegan's <code>mantel()</code> and ade4's <code>mantel.rtest()</code> exactly, verified ",
-            "directly against their R source (2026-08-12). A <b>p-value formula</b> toggle below lets you switch ",
-            "to Genepop/Fstat's own convention (plain <code>b/m</code>, no +1 correction \u2014 verified directly ",
-            "against Genepop's <code>mantelTest()</code> source, <code>src/F_est.cpp</code>, 2026-08-12).",
-            "<br><b>If your numbers don't match Fstat:</b> Fstat's own Isolation-by-Distance Mantel test ",
-            "uses the regression <b>slope b</b> (not Pearson r) of <b>F_R = FST/(1-FST)</b> against ",
-            "<b>ln(distance)</b> (2D habitat) or raw distance (1D) \u2014 make sure you selected ",
-            "\"Regression slope (Rousset)\", picked <code>FR</code>/<code>FR_raw</code> as Y, ticked ",
-            "\"ln(transform) X\" if comparing to a 2D Fstat run, and set the p-value formula to \"Genepop/Fstat\". ",
-            "Also check the Exclude-pairs field is empty if Fstat used every pair."
+            "valid when either matrix is incomplete. Statistic: Pearson's correlation, Spearman's ",
+            "rank correlation, or the slope of an ordinary least-squares regression (Rousset 1997, ",
+            "for isolation-by-distance). ",
+            "One-sided p-value = (b+1)/(m+1) (b = number of permuted statistics at least as extreme ",
+            "as observed, m = number of permutations) \u2014 a bias-corrected proportion that avoids a ",
+            "p-value of exactly 0 or 1 from a finite number of replicates (Davison &amp; Hinkley 1997). ",
+            "A companion tab uses the same test with a plain (uncorrected) proportion instead, kept ",
+            "separate so the two formulas are never mixed up.",
+            "<br>Two computation engines are available: a <b>C++</b> engine running the permutation loop ",
+            "natively for speed, and a fully portable <b>R</b> engine giving the same statistics.",
+            "<br><b>Tip:</b> for isolation-by-distance specifically, the regression-slope statistic is usually ",
+            "run on linearised genetic distance (e.g. F<sub>ST</sub>/(1-F<sub>ST</sub>)) against ",
+            "<b>ln(geographic distance)</b> (2D habitat model) \u2014 make sure you selected the slope statistic, ",
+            "picked a linearised distance as Y, and ticked \"ln(transform) X\" (or chose an already-logged ",
+            "distance column) if that is the model you intend to test."
           ))
         ),
 
@@ -253,24 +254,15 @@ isolation_by_distance_UI <- function(id) {
                 numericInput(ns("mt_n_perm"), "Permutations:",
                              value = 10000, min = 99, max = 200000, step = 1000),
                 tags$p(style="color:#777;font-size:11px;", "Advised \u2265 1000."),
-                radioButtons(ns("mt_p_formula"), "p-value formula:",
-                  choices = c("(b+1)/(m+1) \u2014 vegan/ade4" = "plus1",
-                              "b/m \u2014 Genepop/Fstat (no +1)" = "plain"),
-                  selected = "plus1"),
+                radioButtons(ns("mt_engine"), "Engine:",
+                  choices = c("C++ \u2014 native, faster" = "cpp",
+                              "R \u2014 portable" = "r"),
+                  selected = "cpp"),
                 tags$p(style="color:#777;font-size:11px;",
-                  "Checked directly against Genepop's own mantelTest() source (src/F_est.cpp, 2026-08-12): ",
-                  "it divides by the plain permutation count, with no +1/+1 correction \u2014 unlike vegan/ade4. ",
-                  "Pick \"Genepop/Fstat\" here for p-values directly comparable to those tools; the difference ",
-                  "is small but systematic (our default is always slightly more conservative)."),
-                numericInput(ns("mt_seed"), "Random seed:", value = 67144630, min = 1, max = 2147483647, step = 1),
-                tags$p(style="color:#777;font-size:11px;",
-                  "67144630 is Genepop's own hard-coded default seed (src/settings.cpp: ",
-                  tags$code("mantelSeed=67144630"), "). Setting the same seed makes ", tags$strong("this app"),
-                  " itself perfectly reproducible run-to-run \u2014 it does NOT guarantee the exact same ",
-                  "permutation sequence as Genepop, since R and Genepop's C++ both use the Mersenne Twister ",
-                  "generator but map its raw output to a bounded random integer with different algorithms ",
-                  "(R's own vs. C++'s ", tags$code("std::uniform_int_distribution"), "). Small residual ",
-                  "differences vs. Genepop's own output are expected Monte Carlo noise, not a computation error.")
+                  icon("lock"), " p-value formula: ", tags$strong("(b+1)/(m+1) (bias-corrected proportion)")),
+                tags$div(style = "display:none;",
+                  numericInput(ns("mt_seed"), "Random seed:", value = 67144630, min = 1, max = 2147483647, step = 1)
+                )
               ),
               column(4,
                 textInput(ns("mt_exclude"), "Exclude pairs ('ID1-ID2', comma-sep):", value = ""),
@@ -301,8 +293,8 @@ isolation_by_distance_UI <- function(id) {
                           icon("table"), " Null distribution quantiles (permutations)"),
             DT::DTOutput(ns("dt_mantel_quantiles")),
             tags$p(style="color:#777;font-size:11px;margin-top:6px;",
-              "Same style of output as Fstat's permutation table: the observed statistic can be ",
-              "compared directly against these percentile thresholds of the permuted null distribution.")
+              "The observed statistic can be compared directly against these percentile thresholds of the ",
+              "permuted null distribution.")
           )
         ),
 
@@ -318,51 +310,46 @@ isolation_by_distance_UI <- function(id) {
       ),
 
       # ══════════════════════════════════════════════════════════════════
-      # TAB 2b — Genepop/Fstat Mantel (dedicated tab, p-value formula FIXED
-      # to Genepop/Fstat's own convention — kept separate from the generic
-      # Mantel Test tab above so the two conventions never get mixed up /
-      # accidentally compared against each other under the wrong setting)
+      # TAB 2b — Mantel Test (b/m): dedicated tab for the plain-proportion
+      # p-value formula, kept separate from the generic Mantel Test tab
+      # above (which uses the bias-corrected formula) so the two never get
+      # mixed up / accidentally compared under the wrong setting.
       # ══════════════════════════════════════════════════════════════════
-      tabPanel(title = tagList(icon("file-import"), " Genepop/Fstat Mantel"), value = "tab_mantel_genepop",
+      tabPanel(title = tagList(icon("divide"), " Mantel Test (b/m)"), value = "tab_mantel_genepop",
         br(),
 
         tags$div(
           class = "spg-method-note", style = "border-left-color:#0c4a6e;",
           HTML(paste0(
-            "Dedicated Mantel test tab for direct comparison against <b>Genepop</b> and <b>Fstat</b> \u2014 the ",
-            "p-value formula here is <b>fixed</b> to their own convention (plain <code>b/m</code>, ",
-            "no +1/+1 correction), verified directly against Genepop's <code>mantelTest()</code> source ",
-            "(<code>src/F_est.cpp</code>, 2026-08-12): <code>Pvalueneg = Pvalueneg / mantelPerms</code>. ",
-            "Kept in its own tab \u2014 separate from the generic Mantel Test tab (which defaults to the ",
-            "vegan/ade4 <code>(b+1)/(m+1)</code> convention) \u2014 so the two conventions never get mixed up ",
-            "when comparing results.<br>",
-            "Upload a pairwise file with one row per population pair (e.g. the file exported by the Null ",
-            "Alleles module's IBD table, or any similarly-formatted file: columns for ",
-            "<code>Pop1</code>, <code>Pop2</code>, and numeric distance columns such as ",
-            "<code>FST_raw</code>, <code>FST_ENA</code>, <code>FR</code>, <code>FR_raw</code>, ",
-            "<code>Dgeo_m</code>, <code>lnDgeo</code>\u2026).",
-            "<br><b>C++ engine</b> (default): a native permutation engine (<code>src/mantel_genepop.cpp</code>) ",
-            "that replicates Genepop's own random-number algorithm exactly \u2014 <code>std::mt19937</code> seeded ",
-            "the same way, bounded draws via <code>std::uniform_int_distribution</code>, the same Fisher-Yates ",
-            "shuffle loop, checked line-for-line against Genepop's C++ source. Since R packages on Windows are ",
-            "normally compiled with the same MinGW-w64/GCC toolchain that most likely built ",
-            "<code>Genepop.exe</code>, this gives the best practical chance of an exact match with the same ",
-            "seed \u2014 though it is not guaranteed (a different C++ standard library build could still map the ",
-            "shared random stream to integers differently). The R engine remains available as a fully portable ",
-            "fallback giving the same statistics, just via R's own permutation mechanism."
+            "Same Mantel permutation test as the previous tab, using a different one-sided p-value formula: ",
+            "a <b>plain proportion</b>, <code>p = b/m</code> (b = number of permuted statistics at least as ",
+            "extreme as observed, m = number of permutations) \u2014 no bias correction is applied here, unlike ",
+            "the previous tab's <code>(b+1)/(m+1)</code>. Kept in its own tab so the two formulas are never ",
+            "mixed up when comparing results; the test statistic and permutation scheme (joint row/column ",
+            "relabelling) are otherwise identical.<br>",
+            "Two computation engines are available: a <b>C++</b> engine running the permutation loop natively ",
+            "for speed, and a fully portable <b>R</b> engine giving the same statistics via R's own permutation ",
+            "mechanism \u2014 pick whichever suits your workflow."
           ))
         ),
 
         fluidRow(
           box(width = 4, solidHeader = TRUE, status = "primary",
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("folder-open"), " Load pairwise file"),
-            fileInput(ns("gf_file"), "Browse\u2026 (pairwise file: Pop1, Pop2, distances)",
-                      accept = c(".csv", ".txt", ".tsv")),
-            radioButtons(ns("gf_sep"), "Separator:",
-              choices = c("Tab" = "\t", "Comma" = ",", "Semicolon" = ";"),
-              selected = "\t", inline = TRUE),
-            checkboxInput(ns("gf_header"), "File has header row", value = TRUE),
+                          icon("database"), " Data source"),
+            radioButtons(ns("gf_source"), NULL,
+              choices = c("Null Alleles module (this session)" = "internal",
+                          "Upload a file"                       = "upload"),
+              selected = "internal"),
+            conditionalPanel(
+              condition = sprintf("input['%s'] == 'upload'", ns("gf_source")),
+              fileInput(ns("gf_file"), "Browse\u2026 (pairwise file: Pop1, Pop2, distances)",
+                        accept = c(".csv", ".txt", ".tsv")),
+              radioButtons(ns("gf_sep"), "Separator:",
+                choices = c("Tab" = "\t", "Comma" = ",", "Semicolon" = ";"),
+                selected = "\t", inline = TRUE),
+              checkboxInput(ns("gf_header"), "File has header row", value = TRUE)
+            ),
             uiOutput(ns("gf_file_status")),
             tags$hr(),
             uiOutput(ns("gf_col_pop1_ui")),
@@ -370,7 +357,7 @@ isolation_by_distance_UI <- function(id) {
           ),
           box(width = 8, solidHeader = TRUE, status = "primary",
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("sliders-h"), " Mantel parameters (Genepop/Fstat convention)"),
+                          icon("sliders-h"), " Mantel parameters"),
             fluidRow(
               column(4,
                 uiOutput(ns("gf_col_x_ui")),
@@ -386,23 +373,16 @@ isolation_by_distance_UI <- function(id) {
               ),
               column(4,
                 radioButtons(ns("gf_engine"), "Engine:",
-                  choices = c("C++ \u2014 Genepop-identical RNG algorithm" = "cpp",
-                              "R \u2014 portable, same statistics" = "r"),
+                  choices = c("C++ \u2014 native, faster" = "cpp",
+                              "R \u2014 portable" = "r"),
                   selected = "cpp"),
                 numericInput(ns("gf_n_perm"), "Permutations:",
                              value = 10000, min = 99, max = 200000, step = 1000),
                 tags$p(style="color:#777;font-size:11px;",
-                  icon("lock"), " p-value formula: ", tags$strong("b/m (Genepop/Fstat, fixed \u2014 no +1)")),
-                numericInput(ns("gf_seed"), "Random seed:", value = 67144630, min = 1, max = 2147483647, step = 1),
-                tags$p(style="color:#777;font-size:11px;",
-                  "Genepop's own default (", tags$code("src/settings.cpp: mantelSeed=67144630"), "). The ",
-                  tags$strong("C++ engine"), " replicates Genepop's own generator (", tags$code("std::mt19937"),
-                  " + ", tags$code("std::uniform_int_distribution"), ", same Fisher-Yates shuffle \u2014 see ",
-                  tags$code("src/mantel_genepop.cpp"), "), so with the same seed it has the best practical ",
-                  "chance of an exact match, since this package and Genepop.exe are normally both compiled with ",
-                  "the same MinGW-w64/GCC toolchain on Windows. The ", tags$strong("R engine"), " gives the same ",
-                  "statistics and is fully portable, but maps the shared Mersenne-Twister stream to permutations ",
-                  "differently, so its numbers land close to \u2014 not guaranteed identical to \u2014 Genepop's own."),
+                  icon("lock"), " p-value formula: ", tags$strong("b/m (plain proportion, no correction)")),
+                tags$div(style = "display:none;",
+                  numericInput(ns("gf_seed"), "Random seed:", value = 67144630, min = 1, max = 2147483647, step = 1)
+                ),
                 actionButton(ns("run_gf_mantel"), "Run Mantel Test",
                              icon = icon("random"), class = "btn-action-primary btn-block",
                              style = "font-weight:bold;")

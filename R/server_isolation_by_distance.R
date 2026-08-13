@@ -672,12 +672,12 @@ server_isolation_by_distance <- function(id, rv) {
       selectInput(session$ns("mt_col_pop2"), "Population 2 column:", choices = cols,
                   selected = .guess_col(cols, c("^Pop2$"), cols[min(2L, length(cols))]))
     })
-    # Genepop/Fstat conventionally run IBD with GeographicScale=Log (2D
-    # habitat model: genetic distance regressed on ln(geographic distance)).
-    # If the chosen X column looks like a raw, un-logged distance (contains
+    # The 2D isolation-by-distance habitat model (Rousset 1997) regresses
+    # genetic distance on ln(geographic distance), not raw distance. If the
+    # chosen X column looks like a raw, un-logged distance (contains
     # "dgeo"/"dist" but not "ln"/"log") and the ln-transform box isn't
     # ticked, warn clearly — this single setting explains most real-world
-    # mismatches against Genepop/Fstat output (log vs raw distance changes
+    # mismatches against other IBD tools (log vs raw distance changes
     # Pearson r and the regression slope; Spearman rho is unaffected, since
     # ranks are invariant to a monotone transform like ln()).
     .raw_dist_warning <- function(xcol, log_checked) {
@@ -686,10 +686,10 @@ server_isolation_by_distance <- function(id, rv) {
       if (looks_raw && !isTRUE(log_checked)) {
         tags$p(style="color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:4px;padding:4px 6px;font-size:11px;margin-top:6px;",
           icon("exclamation-triangle"), " ", tags$strong(xcol), " looks like a raw (un-logged) distance. ",
-          "Genepop/Fstat conventionally run isolation-by-distance on ", tags$strong("ln(distance)"),
-          " (2D habitat model, e.g. \"GeographicScale=Log\" in Genepop). Using the raw distance instead will ",
-          "give a different Pearson r / regression slope (Spearman rho is unaffected). Tick \"ln(transform) X\" ",
-          "below, or pick an already-logged column such as ", tags$code("lnDgeo"), ", to match that convention.")
+          "The 2D isolation-by-distance habitat model regresses genetic distance on ", tags$strong("ln(distance)"),
+          ", not the raw value. Using the raw distance instead will give a different Pearson r / regression ",
+          "slope (Spearman rho is unaffected). Tick \"ln(transform) X\" below, or pick an already-logged ",
+          "column such as ", tags$code("lnDgeo"), ", if that is the model you intend to test.")
       }
     }
     output$mt_double_log_warning <- renderUI(.raw_dist_warning(input$mt_col_x, input$mt_log_x))
@@ -742,21 +742,56 @@ server_isolation_by_distance <- function(id, rv) {
       m_y <- .mt_build_square(tmp, "P1", "P2", "Y", all_labels)
 
       n_perm <- as.integer(input$mt_n_perm); stat <- input$mt_stat
-      set.seed(suppressWarnings(as.integer(input$mt_seed %||% 67144630)))
-      withProgress(message = "Running Mantel test\u2026", value = 0.2, {
-        # BUGFIX: this used to be called as (m_y, m_x), which silently swapped
-        # X and Y internally — for the "b" (regression slope) statistic this
-        # produced the WRONG regression (distance regressed on genetic
-        # distance, instead of Rousset's genetic-distance-on-distance), and
-        # the scatter data/labels were mismatched too. This is almost
-        # certainly why slope-b results didn't match Fstat.
-        res <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = stat,
-                                  p_formula = input$mt_p_formula %||% "plus1")
-        setProgress(1.0)
-      })
+      seed <- suppressWarnings(as.integer(input$mt_seed %||% 67144630))
+
+      # BUGFIX kept for reference: an earlier version of this reactive called
+      # .mt_mantel_matrix(m_y, m_x), which silently swapped X and Y internally
+      # — for the "b" (regression slope) statistic this produced the WRONG
+      # regression (distance regressed on genetic distance, instead of
+      # genetic-distance-on-distance), and the scatter data/labels were
+      # mismatched too. Always call with (m_x, m_y) in that order.
+      if (identical(input$mt_engine, "cpp")) {
+        # Native permutation loop for speed; RNG is R's own stream (seeded by
+        # set.seed() below), so results are reproducible and land on the same
+        # statistical footing as the R engine below (same corrected p-value
+        # formula, same test), just faster for large permutation counts.
+        mx_eng <- if (identical(stat, "spearman")) .rank_matrix(m_x) else m_x
+        my_eng <- if (identical(stat, "spearman")) .rank_matrix(m_y) else m_y
+        set.seed(seed)
+        withProgress(message = "Running Mantel test (C++ engine)\u2026", value = 0.3, {
+          cpp_res <- mantel_plus1_cpp(mx_eng, my_eng, n_perm)
+          setProgress(1.0)
+        })
+        n <- nrow(m_x)
+        lower_idx <- which(lower.tri(matrix(TRUE, n, n)))
+        x_all <- m_x[lower_idx]; y_all <- m_y[lower_idx]
+        ok <- is.finite(x_all) & is.finite(y_all)
+        stat_obs <- if (stat == "b") unname(coef(lm(y_all[ok] ~ x_all[ok]))[2L])
+                    else if (stat == "spearman") suppressWarnings(cor(x_all[ok], y_all[ok], method = "spearman"))
+                    else suppressWarnings(cor(x_all[ok], y_all[ok]))
+        lm0 <- tryCatch(lm(y_all[ok] ~ x_all[ok]), error = function(e) NULL)
+        pair_idx <- which(lower.tri(matrix(TRUE, n, n)), arr.ind = TRUE)
+        res <- list(
+          stat_obs = stat_obs, p_pos = cpp_res$p_pos, p_neg = cpp_res$p_neg,
+          n_pairs = cpp_res$n_pairs,
+          slope = if (!is.null(lm0)) unname(coef(lm0)[2L]) else NA_real_,
+          intercept = if (!is.null(lm0)) unname(coef(lm0)[1L]) else NA_real_,
+          r2 = if (!is.null(lm0)) summary(lm0)$r.squared else NA_real_,
+          x = x_all[ok], y = y_all[ok],
+          pop1 = rownames(m_x)[pair_idx[ok, "row"]], pop2 = rownames(m_x)[pair_idx[ok, "col"]],
+          common = rownames(m_x), perm_stats = as.numeric(cpp_res$perm_stats)
+        )
+      } else {
+        set.seed(seed)
+        withProgress(message = "Running Mantel test (R engine)\u2026", value = 0.2, {
+          res <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = stat, p_formula = "plus1")
+          setProgress(1.0)
+        })
+      }
       res$x_label <- paste0(xcol, if (isTRUE(input$mt_log_x)) " (ln)" else "")
       res$y_label <- ycol
       res$stat_label <- switch(stat, b = "Slope b", spearman = "Spearman rho", "Pearson r")
+      res$engine <- input$mt_engine %||% "r"
       res
     })
 
@@ -795,15 +830,16 @@ server_isolation_by_distance <- function(id, rv) {
     output$dt_mantel_summary <- DT::renderDT({
       r <- mantel_result_r()
       d <- data.frame(
-        Quantity = c("X variable", "Y variable", "Statistic", "Observed value",
+        Quantity = c("Engine", "X variable", "Y variable", "Statistic", "Observed value",
                      "Slope b (Y ~ X)", "Intercept", "R\u00b2",
                      "p-value formula",
                      "p (one-sided, positive assoc.)", "p (one-sided, negative assoc.)",
                      "Pairs used (n)", "Common populations (N)", "Permutations", "Random seed"),
-        Value = c(r$x_label, r$y_label, r$stat_label, .fmt_stat(r$stat_obs),
+        Value = c(if (identical(r$engine, "cpp")) "C++ (native)" else "R (portable)",
+                  r$x_label, r$y_label, r$stat_label, .fmt_stat(r$stat_obs),
                   .fmt_stat(r$slope), .fmt_stat(r$intercept),
                   sprintf("%.4f", r$r2),
-                  if (identical(input$mt_p_formula, "plain")) "b/m (Genepop/Fstat)" else "(b+1)/(m+1) (vegan/ade4)",
+                  "(b+1)/(m+1) \u2014 corrected proportion",
                   if (is.na(r$p_pos)) "NA" else sprintf("%.4f", r$p_pos),
                   if (is.na(r$p_neg)) "NA" else sprintf("%.4f", r$p_neg),
                   r$n_pairs, length(r$common), length(r$perm_stats), input$mt_seed %||% 67144630),
@@ -864,11 +900,24 @@ server_isolation_by_distance <- function(id, rv) {
     # ══════════════════════════════════════════════════════════════════════
 
     gf_base_df_r <- reactive({
-      shiny::req(input$gf_file)
-      .mt_read_file(input$gf_file, input$gf_sep, input$gf_header)
+      if (identical(input$gf_source, "internal")) {
+        full_pair_table_r()
+      } else {
+        shiny::req(input$gf_file)
+        .mt_read_file(input$gf_file, input$gf_sep, input$gf_header)
+      }
     })
 
-    output$gf_file_status <- renderUI(.file_status_ui(input$gf_file, gf_base_df_r))
+    output$gf_file_status <- renderUI({
+      if (identical(input$gf_source, "internal")) {
+        r <- tryCatch(na_results_r(), error = function(e) NULL)
+        if (is.null(r)) return(tags$p(style="color:#999;font-size:11px;", icon("info-circle"),
+          " No Null Alleles results yet \u2014 run that module first, or switch to \"Upload a file\"."))
+        return(tags$p(style="color:#166534;font-size:11px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:4px;padding:4px 6px;",
+          icon("check-circle"), " Using Null Alleles results: ", tags$strong(sprintf("%d populations", length(r$pops)))))
+      }
+      .file_status_ui(input$gf_file, gf_base_df_r)
+    })
 
     output$gf_col_pop1_ui <- renderUI({
       cols <- tryCatch(names(gf_base_df_r()), error = function(e) character(0))
@@ -943,7 +992,7 @@ server_isolation_by_distance <- function(id, rv) {
         # that most likely built Genepop.exe.
         mx_eng <- if (identical(stat, "spearman")) .rank_matrix(m_x) else m_x
         my_eng <- if (identical(stat, "spearman")) .rank_matrix(m_y) else m_y
-        withProgress(message = "Running Mantel test (C++ engine, Genepop RNG)\u2026", value = 0.3, {
+        withProgress(message = "Running Mantel test (C++ engine)\u2026", value = 0.3, {
           cpp_res <- mantel_genepop_cpp(mx_eng, my_eng, n_perm, as.double(seed))
           setProgress(1.0)
         })
@@ -994,10 +1043,10 @@ server_isolation_by_distance <- function(id, rv) {
                      "Slope b (Y ~ X)", "Intercept", "R\u00b2", "p-value formula",
                      "p (one-sided, positive assoc.)", "p (one-sided, negative assoc.)",
                      "Pairs used (n)", "Common populations (N)", "Permutations", "Random seed"),
-        Value = c(if (identical(r$engine, "cpp")) "C++ (Genepop-identical RNG)" else "R (portable)",
+        Value = c(if (identical(r$engine, "cpp")) "C++ (native)" else "R (portable)",
                   r$x_label, r$y_label, r$stat_label, .fmt_stat(r$stat_obs),
                   .fmt_stat(r$slope), .fmt_stat(r$intercept),
-                  sprintf("%.4f", r$r2), "b/m (Genepop/Fstat, no +1)",
+                  sprintf("%.4f", r$r2), "b/m \u2014 plain proportion",
                   if (is.na(r$p_pos)) "NA" else sprintf("%.4f", r$p_pos),
                   if (is.na(r$p_neg)) "NA" else sprintf("%.4f", r$p_neg),
                   r$n_pairs, length(r$common), length(r$perm_stats), input$gf_seed %||% 67144630),

@@ -105,3 +105,7 @@ mantel_genepop_cpp <- function(Xmat, Ymat, nperm, seedVal) {
     .Call(`_shinypopgen_mantel_genepop_cpp`, Xmat, Ymat, nperm, seedVal)
 }
 
+mantel_plus1_cpp <- function(Xmat, Ymat, nperm) {
+    .Call(`_shinypopgen_mantel_plus1_cpp`, Xmat, Ymat, nperm)
+}
+
