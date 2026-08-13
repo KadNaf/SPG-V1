@@ -1101,9 +1101,10 @@ server_isolation_by_distance <- function(id, rv) {
     #  2-3-matrix partial Mantel test to up to 10 predictor matrices at once
     #  (Fstat 2.9.4 convention). Base R packages (ade4, vegan, ecodist) cap
     #  partial Mantel at 2-3 matrices and Pearson/Spearman/Kendall only.
-    #  Reuses the SAME data source, column pickers and rectangular-matrix
-    #  handling (joint row/column relabelling, valid on incomplete pairwise
-    #  data) as the simple Mantel test above (Tab 2).
+    #  Has its own independent data source (Null Alleles module or an
+    #  uploaded file) and reuses the same rectangular-matrix handling
+    #  (joint row/column relabelling, valid on incomplete pairwise data)
+    #  as the simple Mantel test above.
     #
     #  CAVEAT the module's info panel also states: Guillot & Rousset (2013)
     #  and Crabot et al. (2019, Methods Ecol Evol 10:532-540) showed that
@@ -1120,29 +1121,60 @@ server_isolation_by_distance <- function(id, rv) {
     #  PAM is NOT implemented here but is flagged as a natural next step.
     # ══════════════════════════════════════════════════════════════════════
 
+    pm_base_df_r <- reactive({
+      if (identical(input$pm_source, "internal")) {
+        full_pair_table_r()
+      } else {
+        shiny::req(input$pm_file)
+        .mt_read_file(input$pm_file, input$pm_sep, input$pm_header)
+      }
+    })
+
+    output$pm_file_status <- renderUI({
+      if (identical(input$pm_source, "internal")) {
+        r <- tryCatch(na_results_r(), error = function(e) NULL)
+        if (is.null(r)) return(tags$p(style="color:#999;font-size:11px;", icon("info-circle"),
+          " No Null Alleles results yet \u2014 run that module first, or switch to \"Upload a file\"."))
+        return(tags$p(style="color:#166534;font-size:11px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:4px;padding:4px 6px;",
+          icon("check-circle"), " Using Null Alleles results: ", tags$strong(sprintf("%d populations", length(r$pops)))))
+      }
+      .file_status_ui(input$pm_file, pm_base_df_r)
+    })
+
+    output$pm_col_pop1_ui <- renderUI({
+      cols <- tryCatch(names(pm_base_df_r()), error = function(e) character(0))
+      selectInput(session$ns("pm_col_pop1"), "Population 1 column:", choices = cols,
+                  selected = .guess_col(cols, c("^Pop1$", "^Farm1$", "^ID1$"), if (length(cols)) cols[1] else NULL))
+    })
+    output$pm_col_pop2_ui <- renderUI({
+      cols <- tryCatch(names(pm_base_df_r()), error = function(e) character(0))
+      selectInput(session$ns("pm_col_pop2"), "Population 2 column:", choices = cols,
+                  selected = .guess_col(cols, c("^Pop2$", "^Farm2$", "^ID2$"), if (length(cols) >= 2L) cols[2] else NULL))
+    })
+
     output$pm_col_y_ui <- renderUI({
-      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      df <- tryCatch(pm_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
       selectInput(session$ns("pm_col_y"), "Response (Y):", choices = cols,
                   selected = .guess_col(cols, c("^FR$", "^FST_ENA$", "^DCSE_INA$"),
                                         if (length(cols)) cols[1] else NULL))
     })
     output$pm_col_x_ui <- renderUI({
-      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      df <- tryCatch(pm_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
       cols <- setdiff(cols, input$pm_col_y %||% "")
       selectInput(session$ns("pm_col_x"), "Predictors (X1\u2026X10) \u2014 pick up to 10:",
                   choices = cols, selected = NULL, multiple = TRUE)
     })
     output$pm_col_x1_ui <- renderUI({
-      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      df <- tryCatch(pm_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
       cols <- setdiff(cols, input$pm_col_y %||% "")
       selectInput(session$ns("pm_col_x1"), "Variable of interest (X):", choices = cols,
                   selected = .guess_col(cols, c("^FR$", "^FST_ENA$"), if (length(cols)) cols[1] else NULL))
     })
     output$pm_col_z_ui <- renderUI({
-      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      df <- tryCatch(pm_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
       cols <- setdiff(cols, c(input$pm_col_y %||% "", input$pm_col_x1 %||% ""))
       selectInput(session$ns("pm_col_z"), "Control matrix (Z, partialled out):", choices = cols,
@@ -1215,8 +1247,9 @@ server_isolation_by_distance <- function(id, rv) {
     }
 
     partial_mantel_result_r <- eventReactive(input$run_partial_mantel, {
-      df <- mt_base_df_r()
-      p1c <- input$mt_col_pop1; p2c <- input$mt_col_pop2
+      df <- pm_base_df_r()
+      p1c <- input$pm_col_pop1; p2c <- input$pm_col_pop2
+      shiny::req(p1c, p2c)
       all_labels <- sort(unique(trimws(c(as.character(df[[p1c]]), as.character(df[[p2c]])))))
       build <- function(valcol) {
         tmp <- data.frame(P1 = trimws(as.character(df[[p1c]])), P2 = trimws(as.character(df[[p2c]])),
