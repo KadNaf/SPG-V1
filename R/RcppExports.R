@@ -117,3 +117,15 @@ mrm_cpp <- function(Ymat, Xmats, nperm, standardize) {
     .Call(`_shinypopgen_mrm_cpp`, Ymat, Xmats, nperm, standardize)
 }
 
+boot_subsamples_fst_cpp <- function(perLocusData, nboot) {
+    .Call(`_shinypopgen_boot_subsamples_fst_cpp`, perLocusData, nboot)
+}
+
+g_test_subdivision_batch_cpp <- function(pop_idx0_full, loci_idx0, loci_allele0, loci_n_allele, n_pop, n_batch) {
+    .Call(`_shinypopgen_g_test_subdivision_batch_cpp`, pop_idx0_full, loci_idx0, loci_allele0, loci_n_allele, n_pop, n_batch)
+}
+
+g_test_subdivision_observed_cpp <- function(pop_idx0_full, loci_idx0, loci_allele0, loci_n_allele, n_pop) {
+    .Call(`_shinypopgen_g_test_subdivision_observed_cpp`, pop_idx0_full, loci_idx0, loci_allele0, loci_n_allele, n_pop)
+}
+

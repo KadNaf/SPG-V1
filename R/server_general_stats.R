@@ -2242,7 +2242,7 @@ server_general_stats <- function(id, rv) {
       # ---------------------------#
       # 1b) Locus bootstrap (resample loci with replacement)
       # ---------------------------#
-      .bump_progress(25, "Bootstrap over loci (FSTAT/FreeNA-comparable)...")
+      .bump_progress(25, "Bootstrap over loci...")
       locus_comp <- wc84_locus_components_cpp(
         dat            = mat,
         pop_col_1based = 1L,
@@ -2824,7 +2824,7 @@ server_general_stats <- function(id, rv) {
 
       if (is.null(row) || nrow(row) == 0L || is.na(row$Observed[1])) {
         valueBox(value = "N/A", color = "red",
-                 subtitle = HTML("<small>FST (loci bootstrap)<br>FSTAT/FreeNA-comparable</small>"),
+                 subtitle = HTML("<small>FST (loci bootstrap)<br>loci resampled with replacement</small>"),
                  icon = icon("layer-group"), width = NULL)
       } else {
         ci_txt <- sprintf("[%.4f ; %.4f]", row$CI_L[1], row$CI_U[1])
@@ -2865,7 +2865,7 @@ server_general_stats <- function(id, rv) {
         spg_write_csv_with_header(
           lb[lb$Statistic %in% c("FST", "FIT", "FIS", "HS", "HT"), , drop = FALSE], file,
           .fst_export_header(
-            "FST/FIT/FIS/HS/HT \u2014 bootstrap over LOCI (comparable to FSTAT and FreeNA)",
+            "FST/FIT/FIS/HS/HT \u2014 bootstrap over LOCI (resampled with replacement)",
             extra = list("Bootstrap unit" = "loci (resampled with replacement across the whole locus set); rows = overall (multilocus) statistics, not per-locus")
           )
         )
@@ -2880,7 +2880,7 @@ server_general_stats <- function(id, rv) {
         spg_write_txt_with_header(
           lb[lb$Statistic %in% c("FST", "FIT", "FIS", "HS", "HT"), , drop = FALSE], file,
           .fst_export_header(
-            "FST/FIT/FIS/HS/HT \u2014 bootstrap over LOCI (comparable to FSTAT and FreeNA)",
+            "FST/FIT/FIS/HS/HT \u2014 bootstrap over LOCI (resampled with replacement)",
             extra = list("Bootstrap unit" = "loci (resampled with replacement across the whole locus set); rows = overall (multilocus) statistics, not per-locus")
           )
         )
@@ -3433,7 +3433,7 @@ server_general_stats <- function(id, rv) {
         loci            = if (!is.null(md)) md$loci_names   else NULL,
         n_perm          = if (!is.null(md)) md$n_permutations else NULL,
         n_boot          = if (!is.null(md)) md$n_bootstrap    else NULL,
-        resampling_unit = "Bootstrap over SUBSAMPLES: whole populations are resampled as blocks (individuals within a resampled population kept together), percentile CI. Permutation p-value: genotypes randomly reassigned among subsamples (one-sided test, FST >= observed). For the loci-based bootstrap comparable to FSTAT/FreeNA (loci resampled with replacement instead of subsamples), see the 'FST bootstrap over loci' table/export.",
+        resampling_unit = "Bootstrap over SUBSAMPLES: whole populations are resampled as blocks (individuals within a resampled population kept together), percentile CI. Permutation p-value: genotypes randomly reassigned among subsamples (one-sided test, FST >= observed). For the loci-based bootstrap (loci resampled with replacement instead of subsamples), see the 'FST bootstrap over loci' table/export.",
         extra           = extra
       )
     }
@@ -3682,16 +3682,31 @@ server_general_stats <- function(id, rv) {
           loci_n_valid[j]   <- length(idx)
         }
 
-        # ── G observé par locus ───────────────────────────────────────────────
-        g_obs <- vapply(seq_len(n_loci), function(j) {
-          pop0_j <- pop_idx0_full[loci_idx[[j]]]
-          if (loci_n_allele[j] < 2L || length(unique(pop0_j)) < 2L) return(NA_real_)
-          .g_stat_vec(pop0_j, loci_allele0[[j]], n_pops, loci_n_allele[j])
-        }, numeric(1))
-        names(g_obs) <- loci_names
+        # ── G observé par locus + permutations — moteur C++ natif (voir
+        # src/g_test_subdivision.cpp, vérifié ligne à ligne contre la logique
+        # R ci-dessous), avec repli automatique sur R en cas d'échec.
+        loci_idx0 <- lapply(loci_idx, function(ix) as.integer(ix - 1L))
 
-        # G global observé = somme des G par locus (propriété additive)
-        g_obs_overall <- sum(g_obs, na.rm = TRUE)
+        cpp_ok <- TRUE
+        obs_res <- tryCatch(
+          g_test_subdivision_observed_cpp(as.integer(pop_idx0_full), loci_idx0, loci_allele0,
+                                           as.integer(loci_n_allele), n_pops),
+          error = function(e) { cpp_ok <<- FALSE; NULL }
+        )
+
+        if (cpp_ok) {
+          g_obs <- as.numeric(obs_res$g_obs); names(g_obs) <- loci_names
+          g_obs_overall <- obs_res$g_obs_overall
+        } else {
+          # ── Repli R (identique à l'ancienne implémentation) ──────────────
+          g_obs <- vapply(seq_len(n_loci), function(j) {
+            pop0_j <- pop_idx0_full[loci_idx[[j]]]
+            if (loci_n_allele[j] < 2L || length(unique(pop0_j)) < 2L) return(NA_real_)
+            .g_stat_vec(pop0_j, loci_allele0[[j]], n_pops, loci_n_allele[j])
+          }, numeric(1))
+          names(g_obs) <- loci_names
+          g_obs_overall <- sum(g_obs, na.rm = TRUE)
+        }
 
         shinyWidgets::updateProgressBar(session, "g_progress", value = 15)
 
@@ -3709,24 +3724,56 @@ server_general_stats <- function(id, rv) {
         set.seed(as.integer(.seed()))
         tick <- max(1L, n_perm %/% 20L)
 
-        for (b in seq_len(n_perm)) {
-          perm_pop0 <- pop_idx0_full[sample.int(n_ind)]   # permutation globale des individus
+        # Moteur C++ : tourne par lots (jusqu'à 20) pour garder une barre de
+        # progression fluide, tout en exécutant la boucle chaude (permutations
+        # x loci) en code natif au lieu d'une boucle R + vapply().
+        if (cpp_ok) {
+          n_batches <- max(1L, min(20L, n_perm))
+          base_size <- n_perm %/% n_batches; rem <- n_perm %% n_batches
+          batch_sizes <- rep(base_size, n_batches)
+          if (rem > 0L) batch_sizes[seq_len(rem)] <- batch_sizes[seq_len(rem)] + 1L
+          batch_sizes <- batch_sizes[batch_sizes > 0L]
 
-          g_perm <- vapply(seq_len(n_loci), function(j) {
-            if (loci_n_allele[j] < 2L) return(NA_real_)
-            pop0_j <- perm_pop0[loci_idx[[j]]]
-            if (length(unique(pop0_j)) < 2L) return(NA_real_)
-            .g_stat_vec(pop0_j, loci_allele0[[j]], n_pops, loci_n_allele[j])
-          }, numeric(1))
+          done <- 0L
+          cpp_ok <- tryCatch({
+            for (bs in batch_sizes) {
+              rb <- g_test_subdivision_batch_cpp(as.integer(pop_idx0_full), loci_idx0, loci_allele0,
+                                                  as.integer(loci_n_allele), n_pops, bs)
+              rows <- (done + 1L):(done + bs)
+              G_null_locus[rows, ] <- rb$g_null_locus
+              G_null_overall[rows] <- rb$g_null_overall
+              done <- done + bs
+              shinyWidgets::updateProgressBar(session, "g_progress",
+                                               value = as.integer(15 + 80 * done / n_perm))
+            }
+            TRUE
+          }, error = function(e) FALSE)
+        }
 
-          G_null_locus[b, ]  <- g_perm
-          G_null_overall[b]  <- sum(g_perm, na.rm = TRUE)
+        # ── Repli R (identique à l'ancienne implémentation) — utilisé si le
+        # moteur C++ (observé OU permutations) a échoué pour une raison
+        # quelconque ; redémarre proprement avec la même graine.
+        if (!cpp_ok) {
+          set.seed(as.integer(.seed()))
+          for (b in seq_len(n_perm)) {
+            perm_pop0 <- pop_idx0_full[sample.int(n_ind)]   # permutation globale des individus
 
-          if (b %% tick == 0L)
-            shinyWidgets::updateProgressBar(
-              session, "g_progress",
-              value = as.integer(15 + 80 * b / n_perm)
-            )
+            g_perm <- vapply(seq_len(n_loci), function(j) {
+              if (loci_n_allele[j] < 2L) return(NA_real_)
+              pop0_j <- perm_pop0[loci_idx[[j]]]
+              if (length(unique(pop0_j)) < 2L) return(NA_real_)
+              .g_stat_vec(pop0_j, loci_allele0[[j]], n_pops, loci_n_allele[j])
+            }, numeric(1))
+
+            G_null_locus[b, ]  <- g_perm
+            G_null_overall[b]  <- sum(g_perm, na.rm = TRUE)
+
+            if (b %% tick == 0L)
+              shinyWidgets::updateProgressBar(
+                session, "g_progress",
+                value = as.integer(15 + 80 * b / n_perm)
+              )
+          }
         }
 
         shinyWidgets::updateProgressBar(session, "g_progress", value = 95)
@@ -3981,7 +4028,7 @@ server_general_stats <- function(id, rv) {
         loci            = if (!is.null(md)) md$loci_names   else NULL,
         n_perm          = if (!is.null(md)) md$n_perm       else NULL,
         n_boot          = NULL,
-        resampling_unit = "Permutation of COMPLETE MULTILOCUS GENOTYPES (whole individuals) among subsamples \u2014 the valid scheme when Hardy-Weinberg is NOT assumed within samples (FSTAT / Goudet et al. 1996, section 7.1). Only individuals with a complete genotype at ALL loci simultaneously are used (N_geno column). Two one-sided p-values per locus: p(>= obs.) = (b+1)/(m+1) with b = #{G_perm >= G_obs}; p(> obs.) with b = #{G_perm > G_obs}. Overall row = G summed over loci (additive property), tested the same way.",
+        resampling_unit = "Permutation of COMPLETE MULTILOCUS GENOTYPES (whole individuals) among subsamples \u2014 the valid scheme when Hardy-Weinberg is NOT assumed within samples (Goudet et al. 1996, section 7.1). Only individuals with a complete genotype at ALL loci simultaneously are used (N_geno column). Two one-sided p-values per locus: p(>= obs.) = (b+1)/(m+1) with b = #{G_perm >= G_obs}; p(> obs.) with b = #{G_perm > G_obs}. Overall row = G summed over loci (additive property), tested the same way.",
         extra           = extra
       )
     }
