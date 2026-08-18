@@ -22,15 +22,7 @@ isolation_by_distance_UI <- function(id) {
 
     fluidRow(
       box(
-        width = 12, solidHeader = TRUE, status = "primary",
-        title = div(style = "background:#FFFFFF; padding:10px; color:#333a43; font-weight:600;",
-                    icon("chart-bar"), " Summary "),
-        fluidRow(
-          column(3, valueBoxOutput(ns("box_nloci"),  width = NULL)),
-          column(3, valueBoxOutput(ns("box_npops"),  width = NULL)),
-          column(3, valueBoxOutput(ns("box_fstena"), width = NULL)),
-          column(3, valueBoxOutput(ns("box_nboot"),  width = NULL))
-        ),
+        width = 12, solidHeader = FALSE,
         uiOutput(ns("ui_run_status"))
       )
     ),
@@ -246,12 +238,7 @@ isolation_by_distance_UI <- function(id) {
           box(width = 12, solidHeader = TRUE, status = "primary",
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
                           icon("chart-bar"), " Results"),
-            fluidRow(
-              column(3, valueBoxOutput(ns("box_m_stat"), width = NULL)),
-              column(3, valueBoxOutput(ns("box_m_pval"), width = NULL)),
-              column(3, valueBoxOutput(ns("box_m_n"),    width = NULL)),
-              column(3, valueBoxOutput(ns("box_m_r2"),   width = NULL))
-            ),
+            uiOutput(ns("ui_mantel_key_values")),
             uiOutput(ns("ui_mantel_summary")),
             tags$br(),
             downloadButton(ns("dl_mantel_txt"), "Download results (.txt)", class = "btn-action-secondary btn-sm")
@@ -262,7 +249,9 @@ isolation_by_distance_UI <- function(id) {
           box(width = 6, solidHeader = FALSE,
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
                           icon("table"), " Result summary"),
-            DT::DTOutput(ns("dt_mantel_summary"))
+            DT::DTOutput(ns("dt_mantel_summary")),
+            tags$br(),
+            downloadButton(ns("dl_mantel_summary_txt"), "Download (.txt)", class = "btn-action-secondary btn-sm")
           ),
           box(width = 6, solidHeader = FALSE,
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",

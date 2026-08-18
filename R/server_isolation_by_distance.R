@@ -48,26 +48,6 @@ server_isolation_by_distance <- function(id, rv) {
       r
     })
 
-    output$box_nloci <- renderValueBox({
-      r <- tryCatch(na_results_r(), error = function(e) NULL)
-      valueBox(if (is.null(r)) "\u2014" else length(r$markers), "Loci", icon = icon("dna"), color = "navy")
-    })
-    output$box_npops <- renderValueBox({
-      r <- tryCatch(na_results_r(), error = function(e) NULL)
-      valueBox(if (is.null(r)) "\u2014" else length(r$pops), "Populations", icon = icon("users"), color = "teal")
-    })
-    output$box_fstena <- renderValueBox({
-      r <- tryCatch(na_results_r(), error = function(e) NULL)
-      v <- if (is.null(r)) NA_real_ else round(r$fst_global$global_ena, 4)
-      col <- if (is.na(v)) "navy" else if (v > 0.15) "red" else if (v > 0.05) "yellow" else "green"
-      valueBox(if (is.na(v)) "\u2014" else v, HTML("Global F<sub>ST</sub>-ENA"),
-               icon = icon("chart-bar"), color = col)
-    })
-    output$box_nboot <- renderValueBox({
-      r <- tryCatch(na_results_r(), error = function(e) NULL)
-      valueBox(if (is.null(r)) "\u2014" else r$nboot, "Bootstrap replicates (loci)", icon = icon("dice"), color = "purple")
-    })
-
     output$ui_run_status <- renderUI({
       if (isTRUE(identical(input$ibd_source, "external"))) {
         fname <- input$ibd_ext_file$name
@@ -747,25 +727,21 @@ server_isolation_by_distance <- function(id, rv) {
       res
     })
 
-    output$box_m_stat <- renderValueBox({
+    output$ui_mantel_key_values <- renderUI({
       r <- mantel_result_r()
-      valueBox(round(r$stat_obs, 4), HTML(paste0(r$stat_label, "<br>(observed)")),
-               icon = icon("chart-line"), color = "purple")
-    })
-    output$box_m_pval <- renderValueBox({
-      r <- mantel_result_r(); pv <- r$p_pos
-      col <- if (is.na(pv)) "yellow" else if (pv < 0.05) "green" else if (pv < 0.10) "yellow" else "red"
-      valueBox(if (is.na(pv)) "NA" else formatC(pv, format = "f", digits = 4),
-               HTML(paste0("p-value<br>(one-sided, ", if (identical(r$p_formula,"plain")) "b/m" else "(b+1)/(m+1)", ")")),
-               icon = icon("check-circle"), color = col)
-    })
-    output$box_m_n <- renderValueBox({
-      valueBox(mantel_result_r()$n_pairs, "Pairs used", icon = icon("project-diagram"), color = "blue")
-    })
-    output$box_m_r2 <- renderValueBox({
-      r2 <- mantel_result_r()$r2
-      valueBox(if (is.na(r2)) "NA" else paste0(round(r2 * 100, 1), "%"),
-               HTML("Variance<br>explained (R\u00b2)"), icon = icon("percentage"), color = "teal")
+      pv <- r$p_pos
+      r2 <- r$r2
+      fmt_lbl <- if (identical(r$p_formula, "plain")) "b/m" else "(b+1)/(m+1)"
+      tags$div(style = "display:flex; flex-wrap:wrap; gap:28px; padding:6px 0 14px 0; font-size:14px; color:#333;",
+        tags$div(tags$strong(r$stat_label, style="color:#555;"), tags$br(),
+                 tags$span(round(r$stat_obs, 4), style="font-size:18px;font-weight:700;")),
+        tags$div(tags$strong(paste0("p-value (", fmt_lbl, ")"), style="color:#555;"), tags$br(),
+                 tags$span(if (is.na(pv)) "NA" else formatC(pv, format = "f", digits = 4), style="font-size:18px;font-weight:700;")),
+        tags$div(tags$strong("Pairs used", style="color:#555;"), tags$br(),
+                 tags$span(r$n_pairs, style="font-size:18px;font-weight:700;")),
+        tags$div(tags$strong("Variance explained (R\u00b2)", style="color:#555;"), tags$br(),
+                 tags$span(if (is.na(r2)) "NA" else paste0(round(r2 * 100, 1), "%"), style="font-size:18px;font-weight:700;"))
+      )
     })
 
     output$ui_mantel_summary <- renderUI({
@@ -782,9 +758,8 @@ server_isolation_by_distance <- function(id, rv) {
       )
     })
 
-    output$dt_mantel_summary <- DT::renderDT({
-      r <- mantel_result_r()
-      d <- data.frame(
+    .mantel_summary_df <- function(r) {
+      data.frame(
         Quantity = c("Engine", "X variable", "Y variable", "Statistic", "Observed value",
                      "Slope b (Y ~ X)", "Intercept", "R\u00b2",
                      "p-value formula",
@@ -800,10 +775,22 @@ server_isolation_by_distance <- function(id, rv) {
                   r$n_pairs, length(r$common), length(r$perm_stats)),
         stringsAsFactors = FALSE
       )
+    }
+
+    output$dt_mantel_summary <- DT::renderDT({
+      d <- .mantel_summary_df(mantel_result_r())
       DT::datatable(d, rownames = FALSE,
         options = list(dom = "t", pageLength = nrow(d), ordering = FALSE),
         class = "compact stripe hover")
     })
+
+    output$dl_mantel_summary_txt <- downloadHandler(
+      filename = function() paste0("mantel_result_summary_", Sys.Date(), ".txt"),
+      content  = function(file) {
+        d <- .mantel_summary_df(mantel_result_r())
+        write.table(d, file, sep = "\t", row.names = FALSE, quote = FALSE)
+      }
+    )
 
     output$dt_mantel_quantiles <- DT::renderDT({
       r <- mantel_result_r()
@@ -837,20 +824,7 @@ server_isolation_by_distance <- function(id, rv) {
       filename = function() paste0("mantel_test_", Sys.Date(), ".txt"),
       content  = function(file) {
         r <- mantel_result_r()
-        d_summary <- data.frame(
-          Quantity = c("Engine", "X variable", "Y variable", "Statistic", "Observed value",
-                       "Slope b (Y ~ X)", "Intercept", "R2", "p-value formula",
-                       "p (one-sided, positive assoc.)", "p (one-sided, negative assoc.)",
-                       "Pairs used (n)", "Common populations (N)", "Permutations"),
-          Value = c(if (identical(r$engine, "cpp")) "C++ (native)" else "R (portable)",
-                    r$x_label, r$y_label, r$stat_label, .fmt_stat(r$stat_obs),
-                    .fmt_stat(r$slope), .fmt_stat(r$intercept), sprintf("%.4f", r$r2),
-                    if (identical(r$p_formula, "plain")) "b/m (plain proportion)" else "(b+1)/(m+1) (corrected proportion)",
-                    if (is.na(r$p_pos)) "NA" else sprintf("%.4f", r$p_pos),
-                    if (is.na(r$p_neg)) "NA" else sprintf("%.4f", r$p_neg),
-                    r$n_pairs, length(r$common), length(r$perm_stats)),
-          stringsAsFactors = FALSE
-        )
+        d_summary <- .mantel_summary_df(r)
         probs <- c(0.005, 0.01, 0.025, 0.05, 0.10, 0.50, 0.90, 0.95, 0.975, 0.99, 0.995)
         q <- stats::quantile(r$perm_stats, probs = probs, na.rm = TRUE, type = 7)
         d_quant <- data.frame(
