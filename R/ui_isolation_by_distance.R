@@ -16,8 +16,7 @@ isolation_by_distance_UI <- function(id) {
 
     module_banner(
       "atom",
-      "Isolation by Distance · Mantel Test",
-      "#0c4a6e"
+      "Isolation by Distance · Mantel Test"
     ),
 
     fluidRow(
@@ -135,7 +134,7 @@ isolation_by_distance_UI <- function(id) {
                           icon("table"), " Full pairwise table"),
             DT::DTOutput(ns("dt_ibd_table")),
             tags$br(),
-            downloadButton(ns("dl_ibd_txt"), "Download full table + regression summary (.txt)", class = "btn-action-secondary btn-sm")
+            downloadButton(ns("dl_ibd_txt"), ".txt", class = "btn-action-secondary btn-sm")
           )
         )
       ),
@@ -241,7 +240,7 @@ isolation_by_distance_UI <- function(id) {
             uiOutput(ns("ui_mantel_key_values")),
             uiOutput(ns("ui_mantel_summary")),
             tags$br(),
-            downloadButton(ns("dl_mantel_txt"), "Download results (.txt)", class = "btn-action-secondary btn-sm")
+            downloadButton(ns("dl_mantel_txt"), ".txt", class = "btn-action-secondary btn-sm")
           )
         ),
 
@@ -251,7 +250,7 @@ isolation_by_distance_UI <- function(id) {
                           icon("table"), " Result summary"),
             DT::DTOutput(ns("dt_mantel_summary")),
             tags$br(),
-            downloadButton(ns("dl_mantel_summary_txt"), "Download (.txt)", class = "btn-action-secondary btn-sm")
+            downloadButton(ns("dl_mantel_summary_txt"), ".txt", class = "btn-action-secondary btn-sm")
           ),
           box(width = 6, solidHeader = FALSE,
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
