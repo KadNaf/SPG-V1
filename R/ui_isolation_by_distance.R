@@ -16,7 +16,12 @@ isolation_by_distance_UI <- function(id) {
 
     module_banner(
       "atom",
-      "Isolation by Distance · Mantel Test"
+      "Isolation by Distance · Mantel Test",
+      "<br>",
+      "One-sided p-value = (b+1)/(m+1) (bias-corrected proportion)",
+      "<br>",
+      "One-sided p-value = (b/m) (plain proportion, no correction)"
+      "#0c4a6e"
     ),
 
     fluidRow(
