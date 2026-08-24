@@ -65,12 +65,19 @@ isolation_by_distance_UI <- function(id) {
         fluidRow(
           box(width = 12, solidHeader = TRUE, status = "primary",
               title = div(style="background:#FFFFFF;padding:10px;color:#333a43;font-weight:600;",
-                          icon("sliders-h"), " Regression parameters"),
+                          icon("sliders-h"), " Rousset's Isolation by Distance model"),
+            fluidRow(
+              column(12,
+                tags$div(style = "padding:10px 0 16px 0;",
+                  radioButtons(ns("ibd_model"), NULL,
+                    choices = c("Rousset's 1D" = "1D", "Rousset's 2D" = "2D"),
+                    selected = "2D", inline = TRUE)
+                )
+              )
+            ),
+            tags$hr(),
             fluidRow(
               column(4,
-                radioButtons(ns("ibd_model"), "Habitat model:",
-                  choices = c("2D (F_R ~ ln(D_geo))" = "2D", "1D (F_R ~ D_geo)" = "1D"),
-                  selected = "2D"),
                 radioButtons(ns("ibd_metric"), "Genetic distance metric:",
                   choices = c("F_R (raw FST)" = "raw", "F_R (FST-ENA)" = "ena"),
                   selected = "ena")

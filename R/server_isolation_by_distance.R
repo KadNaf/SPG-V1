@@ -385,7 +385,7 @@ server_isolation_by_distance <- function(id, rv) {
         s <- as.data.frame(r$summary, stringsAsFactors = FALSE)
         hdr <- c(
           "Isolation by Distance \u2014 Rousset (1997) regression",
-          sprintf("Habitat model: %s", if (r$use_log) "2D (F_R ~ ln(D_geo))" else "1D (F_R ~ D_geo)"),
+          sprintf("Habitat model: %s", if (r$use_log) "Rousset's 2D (F_R ~ ln(D_geo))" else "Rousset's 1D (F_R ~ D_geo)"),
           sprintf("Genetic distance metric: %s", if (identical(r$metric, "raw")) "F_R (raw FST)" else "F_R (FST-ENA)"),
           sprintf("Data source: %s", if (isTRUE(identical(input$ibd_source, "external"))) "external re-loaded pairwise file" else "Null Alleles module (this session)"),
           sprintf("Slope (b) / Nb / Nem \u2014 average: b=%.6f Nb=%.6f Nem=%.6f",
