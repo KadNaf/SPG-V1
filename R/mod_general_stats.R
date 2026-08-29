@@ -9,9 +9,7 @@ mod_general_stats_ui <- function(id) {
     useWaiter(),
     tags$head(gs_head()),
 
-    module_banner("table", "General Statistics",
-      "Na \u00b7 Ne \u00b7 Ho \u00b7 He \u00b7 F-statistics per allele (Weir & Cockerham 1984)",
-      "#3B9AB2"),
+    module_banner("table", "General Statistics",""),
 
     fluidRow(
       box(
@@ -83,14 +81,14 @@ mod_general_stats_ui <- function(id) {
     ),
 
     h2("F-statistics per allele (Weir & Cockerham)", class = "section-title"),
-    tags$p(HTML(paste0(
-      "For each allele at each locus, WC84 variance components ",
-      "(a = between-pop, b = between-indiv, c = within-indiv) are computed ",
-      "and the three F-statistics derived: ",
-      "<b>FIS</b> = b/(b+c), <b>FST</b> = a/(a+b+c), <b>FIT</b> = (a+b)/(a+b+c). ",
-      "<br>High <b>FIS</b> for a specific allele may indicate amplification dropout. ",
-      "Outlier <b>FST</b> may signal selection or local adaptation."
-    )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
+    # tags$p(HTML(paste0(
+    #   "For each allele at each locus, WC84 variance components ",
+    #   "(a = between-pop, b = between-indiv, c = within-indiv) are computed ",
+    #   "and the three F-statistics derived: ",
+    #   "<b>FIS</b> = b/(b+c), <b>FST</b> = a/(a+b+c), <b>FIT</b> = (a+b)/(a+b+c). ",
+    #   "<br>High <b>FIS</b> for a specific allele may indicate amplification dropout. ",
+    #   "Outlier <b>FST</b> may signal selection or local adaptation."
+    # )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
 
     fluidRow(
       box(
@@ -106,10 +104,10 @@ mod_general_stats_ui <- function(id) {
               class = "btn-action-primary btn-block", style = "font-weight: bold;")
           ),
           column(9,
-            h5("Results table"),
-            p("FIS, FST and FIT are reported per allele and per locus from WC84
-              variance components. Run independently of the bootstrap/permutation
-              analyses.")
+            h5("Results table")
+            # p("FIS, FST and FIT are reported per allele and per locus from WC84
+            #   variance components. Run independently of the bootstrap/permutation
+            #   analyses.")
           )
         ),
         br(),

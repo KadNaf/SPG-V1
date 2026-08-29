@@ -687,7 +687,7 @@ app_ui <- function() {
       shiny::div(
         class = "spg-hero-logo",
         shiny::tags$img(
-          src   = "spg_www/shinypopgen_logo.svg",
+          src   = "spg_www/Logo1.svg",
           height = "400px",
           alt   = "ShinyPopGen logo",
           style = "filter: drop-shadow(0 8px 32px rgba(0,0,0,0.55));"

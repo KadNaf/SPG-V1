@@ -74,7 +74,7 @@ module_banner <- function(icon_name, title, subtitle, accent = "#6B64EF") {
         '</svg>'
       )),
       shiny::tags$img(
-        src   = "spg_www/shinypopgen_logo.svg",
+        src   = "spg_www/Logo1.svg",
         height = "72px",
         alt   = "ShinyPopGen",
         style = "opacity:0.88; filter:drop-shadow(0 2px 10px rgba(0,0,0,0.5));"

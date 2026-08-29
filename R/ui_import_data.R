@@ -22,9 +22,7 @@ import_data_ui <- function(id) {
       }
     ")),
 
-    module_banner("upload", "Import Data",
-      "Upload CSV/TXT \u00b7 Map columns \u00b7 Assign populations and markers",
-      "#6B64EF"),
+    module_banner("upload", "Import Data",""),
 
     # ── Row 1: two config boxes side by side, same height ───────────────────
     tags$div(

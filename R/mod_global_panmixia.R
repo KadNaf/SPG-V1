@@ -8,18 +8,17 @@ mod_global_panmixia_ui <- function(id) {
   fluidPage(
     tags$head(gs_head()),
 
-    module_banner("globe", "Global Panmixia \u2014 FIT",
-      "Overall HWE across all populations \u00b7 Weir & Cockerham (1984) \u00b7 Block bootstrap + permutation p-value",
-      "#E1AF00"),
-    tags$div(class = "spg-method-note", style = "border-left-color:#E1AF00;",
-      HTML(paste0(
-        "Global panmixia: the <em>entire</em> dataset is at HWE \u2014 all populations mate as a single unit. ",
-        "<br><br>",
-        "<b>H<sub>0</sub>:</b> FIT = 0 globally (no departure from HWE across all samples). &nbsp;",
-        "<b>Bootstrap:</b> populations are the resampling unit (block bootstrap); percentile CI per locus. &nbsp;",
-        "<b>Permutation:</b> alleles shuffled across all individuals (ignoring populations); two-sided |FIT| test."
-      ))
-    ),
+    module_banner("globe", "Global Panmixia · FIT",""),
+    
+    # tags$div(class = "spg-method-note", style = "border-left-color:#E1AF00;",
+    #   HTML(paste0(
+    #     "Global panmixia: the <em>entire</em> dataset is at HWE \u2014 all populations mate as a single unit. ",
+    #     "<br><br>",
+    #     "<b>H<sub>0</sub>:</b> FIT = 0 globally (no departure from HWE across all samples). &nbsp;",
+    #     "<b>Bootstrap:</b> populations are the resampling unit (block bootstrap); percentile CI per locus. &nbsp;",
+    #     "<b>Permutation:</b> alleles shuffled across all individuals (ignoring populations); two-sided |FIT| test."
+    #   ))
+    # ),
 
     fluidRow(
       box(
@@ -72,12 +71,12 @@ mod_global_panmixia_ui <- function(id) {
     ),
 
     h2("FIT \u2014 Bootstrap CI and permutation results", class = "section-title"),
-    tags$p(HTML(paste0(
-      "Population-block bootstrap confidence intervals (populations are the resampling unit) and ",
-      "permutation p-values for the global HWE test across <em>all</em> populations combined. ",
-      "<br>Bootstrap CI and p-values are given per locus; the Overall row uses the ratio-of-sums FIT across all loci. ",
-      "<br>A CI excluding zero or a small p-value indicates a significant global departure from HWE."
-    )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
+    # tags$p(HTML(paste0(
+    #   "Population-block bootstrap confidence intervals (populations are the resampling unit) and ",
+    #   "permutation p-values for the global HWE test across <em>all</em> populations combined. ",
+    #   "<br>Bootstrap CI and p-values are given per locus; the Overall row uses the ratio-of-sums FIT across all loci. ",
+    #   "<br>A CI excluding zero or a small p-value indicates a significant global departure from HWE."
+    # )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
 
     fluidRow(
       box(
@@ -89,8 +88,8 @@ mod_global_panmixia_ui <- function(id) {
         tabsetPanel(
           tabPanel("P-value and confidence intervals",
             h4(icon("info-circle"), "FIT estimates with bootstrap CI and permutation p-values"),
-            p("FIT estimates per locus. Bootstrap CI: population-block resampling (populations resampled with replacement).
-              Permutation p-values: global allele shuffle, two-sided |FIT| test, consistent with the FIS permutation test."),
+            # p("FIT estimates per locus. Bootstrap CI: population-block resampling (populations resampled with replacement).
+            #   Permutation p-values: global allele shuffle, two-sided |FIT| test, consistent with the FIS permutation test."),
             DTOutput(ns("fit_results_table")), br(),
             fluidRow(
               column(6, downloadButton(ns("download_fit_table"),     ".csv", class = "btn-download-primary btn-block")),

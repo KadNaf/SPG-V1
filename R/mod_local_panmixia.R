@@ -8,20 +8,19 @@ mod_local_panmixia_ui <- function(id) {
   fluidPage(
     tags$head(gs_head()),
 
-    module_banner("flask", "Local Panmixia \u2014 FIS",
-      "Within-population HWE \u00b7 Weir & Cockerham (1984) \u00b7 Bootstrap CI + permutation p-value",
-      "#9986A5"),
-    tags$div(class = "spg-method-note", style = "border-left-color:#9986A5;",
-      HTML(paste0(
-        "Local panmixia means that each sub-population is at ",
-        "Hardy-Weinberg equilibrium (HWE) \u2014 individuals mate randomly ",
-        "<em>within</em> their population. ",
-        "<br><br>",
-        "<b>H<sub>0</sub>:</b> FIS = 0 within each population (no departure from HWE). &nbsp;",
-        "<b>Bootstrap:</b> individuals resampled with replacement within populations; percentile CI. &nbsp;",
-        "<b>Permutation:</b> alleles reshuffled within each population; two-sided |FIS| test."
-      ))
-    ),
+    module_banner("flask", "Local Panmixia · FIS",""),
+    
+    # tags$div(class = "spg-method-note", style = "border-left-color:#9986A5;",
+    #   HTML(paste0(
+    #     "Local panmixia means that each sub-population is at ",
+    #     "Hardy-Weinberg equilibrium (HWE) \u2014 individuals mate randomly ",
+    #     "<em>within</em> their population. ",
+    #     "<br><br>",
+    #     "<b>H<sub>0</sub>:</b> FIS = 0 within each population (no departure from HWE). &nbsp;",
+    #     "<b>Bootstrap:</b> individuals resampled with replacement within populations; percentile CI. &nbsp;",
+    #     "<b>Permutation:</b> alleles reshuffled within each population; two-sided |FIS| test."
+    #   ))
+    # ),
 
     fluidRow(
       box(
@@ -63,12 +62,12 @@ mod_local_panmixia_ui <- function(id) {
       )
     ),
 
-    h2("FIS \u2014 Bootstrap CI and permutation results", class = "section-title"),
-    tags$p(HTML(paste0(
-      "Bootstrap confidence intervals derived from resampling individuals within populations. ",
-      "Permutation p-values from allele shuffling within populations (two-sided |FIS| test). ",
-      "<br>A CI excluding zero indicates a significant departure from HWE at that locus / population."
-    )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
+    h2("FIS · Bootstrap CI and permutation results", class = "section-title"),
+    # tags$p(HTML(paste0(
+    #   "Bootstrap confidence intervals derived from resampling individuals within populations. ",
+    #   "Permutation p-values from allele shuffling within populations (two-sided |FIS| test). ",
+    #   "<br>A CI excluding zero indicates a significant departure from HWE at that locus / population."
+    # )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
 
     fluidRow(
       box(
@@ -81,9 +80,9 @@ mod_local_panmixia_ui <- function(id) {
           tabPanel("P-value and confidence intervals",
             h4(icon("info-circle"),
                "FIS estimates with bootstrap CI and permutation p-values"),
-            p("Bootstrap CI derived from resampling individuals within populations.
-              P-values from allele permutation within populations (two-sided |FIS| test).
-              CI excluding zero indicates significant departure from HWE."),
+            # p("Bootstrap CI derived from resampling individuals within populations.
+            #   P-values from allele permutation within populations (two-sided |FIS| test).
+            #   CI excluding zero indicates significant departure from HWE."),
             DTOutput(ns("fis_results_table")), br(),
             fluidRow(
               column(6, downloadButton(ns("download_fis_table"),     ".csv", class = "btn-download-primary btn-block")),
@@ -100,11 +99,11 @@ mod_local_panmixia_ui <- function(id) {
       )
     ),
 
-    h2("FIS \u2014 By Locus \u00d7 Population", class = "section-title"),
-    tags$p(HTML(paste0(
-      "WC84 FIS and permutation p-values for every locus \u00d7 population combination. ",
-      "Permutation only (no bootstrap CI). Run independently of the main analysis above."
-    )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
+    h2("FIS · By Locus \u00d7 Population", class = "section-title"),
+    # tags$p(HTML(paste0(
+    #   "WC84 FIS and permutation p-values for every locus \u00d7 population combination. ",
+    #   "Permutation only (no bootstrap CI). Run independently of the main analysis above."
+    # )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
 
     fluidRow(
       box(

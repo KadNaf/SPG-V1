@@ -9,22 +9,21 @@ mod_genetic_diversities_ui <- function(id) {
   fluidPage(
     tags$head(gs_head()),
 
-    module_banner("chart-line", "Genetic Diversities \u2014 HS, HT",
-      "Within- and total gene diversity \u00b7 Locus bootstrap for all multilocus WC84 estimators",
-      "#78B7C5"),
-    tags$div(class = "spg-method-note", style = "border-left-color:#78B7C5;",
-      HTML(paste0(
-        "<b>HS</b> (within-population gene diversity) and <b>HT</b> (total gene diversity) ",
-        "from Weir &amp; Cockerham (1984), reported per locus and as multilocus estimates. ",
-        "<br><br>",
-        "<b>Confidence intervals are computed by three resampling schemes:</b>",
-        "<ul style='margin:4px 0 0 16px;'>",
-        "<li><b>Individuals</b> (HS per locus and per population): individuals resampled with replacement within each population.</li>",
-        "<li><b>Populations</b> (HS and HT per locus): populations resampled with replacement.</li>",
-        "<li><b>Loci</b> (overall HS and HT only): loci resampled with replacement.</li>",
-        "</ul>"
-      ))
-    ),
+    module_banner("chart-line", "Genetic Diversities · HS · HT",""),
+    
+    # tags$div(class = "spg-method-note", style = "border-left-color:#78B7C5;",
+    #   HTML(paste0(
+    #     "<b>HS</b> (within-population gene diversity) and <b>HT</b> (total gene diversity) ",
+    #     "from Weir &amp; Cockerham (1984), reported per locus and as multilocus estimates. ",
+    #     "<br><br>",
+    #     "<b>Confidence intervals are computed by three resampling schemes:</b>",
+    #     "<ul style='margin:4px 0 0 16px;'>",
+    #     "<li><b>Individuals</b> (HS per locus and per population): individuals resampled with replacement within each population.</li>",
+    #     "<li><b>Populations</b> (HS and HT per locus): populations resampled with replacement.</li>",
+    #     "<li><b>Loci</b> (overall HS and HT only): loci resampled with replacement.</li>",
+    #     "</ul>"
+    #   ))
+    # ),
 
     fluidRow(
       box(
@@ -68,14 +67,14 @@ mod_genetic_diversities_ui <- function(id) {
       )
     ),
 
-    h2("HS, HT \u2014 per-locus results and locus bootstrap", class = "section-title"),
-    tags$p(HTML(paste0(
-      "<b>HS</b> (within-population gene diversity) and <b>HT</b> (total gene diversity) per locus. ",
-      "The <em>locus bootstrap</em> resamples L loci with replacement (B replicates) to obtain ",
-      "SE and percentile CI for the multilocus estimators: ",
-      "FST, FIT, FIS, HS and HT. ",
-      "<br>Results are produced by the run in the <b>Subdivision</b> tab or by the independent run above."
-    )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
+    h2("HS · HT \u2014 per-locus results and locus bootstrap", class = "section-title"),
+    # tags$p(HTML(paste0(
+    #   "<b>HS</b> (within-population gene diversity) and <b>HT</b> (total gene diversity) per locus. ",
+    #   "The <em>locus bootstrap</em> resamples L loci with replacement (B replicates) to obtain ",
+    #   "SE and percentile CI for the multilocus estimators: ",
+    #   "FST, FIT, FIS, HS and HT. ",
+    #   "<br>Results are produced by the run in the <b>Subdivision</b> tab or by the independent run above."
+    # )), style = "font-size: 16px; line-height: 1.5; color: #2c3e50;"),
 
     fluidRow(
       box(

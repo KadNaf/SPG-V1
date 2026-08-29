@@ -4,28 +4,26 @@ ui_allele_frequencies <- function(id) {
   fluidPage(
     tags$head(gs_head()),
     
-    module_banner("table", "Allele Frequencies",
-      "Population-specific allele frequencies · N genotyped · N missing · Na / Ne / He / Ho / Fis",
-      "#78B7C5"),
+    module_banner("table", "Allele Frequencies",""),
     
-    tags$div(class = "spg-method-note", style = "border-left-color:#78B7C5;",
-      HTML(paste0(
-        "<b>Allele frequency analysis</b> following the Fstat format. ",
-        "Displays allele frequencies for each marker across populations, ",
-        "with sample sizes (N genotyped, N missing) and diversity indices ",
-        "per locus-population combination.",
-        "<br><br>",
-        "<b>Diversity indices reported:</b>",
-        "<ul style='margin:4px 0 0 16px;'>",
-        "<li><b>Na</b>: Number of alleles</li>",
-        "<li><b>Ne</b>: Effective number of alleles</li>",
-        "<li><b>He</b>: Expected heterozygosity (gene diversity)</li>",
-        "<li><b>Ho</b>: Observed heterozygosity</li>",
-        "<li><b>Fis</b>: Inbreeding coefficient (per locus-population)</li>",
-        "</ul>",
-        "Allele frequencies include zeros for missing alleles."
-      ))
-    ),
+    # tags$div(class = "spg-method-note", style = "border-left-color:#78B7C5;",
+    #   HTML(paste0(
+    #     "<b>Allele frequency analysis</b> following the Fstat format. ",
+    #     "Displays allele frequencies for each marker across populations, ",
+    #     "with sample sizes (N genotyped, N missing) and diversity indices ",
+    #     "per locus-population combination.",
+    #     "<br><br>",
+    #     "<b>Diversity indices reported:</b>",
+    #     "<ul style='margin:4px 0 0 16px;'>",
+    #     "<li><b>Na</b>: Number of alleles</li>",
+    #     "<li><b>Ne</b>: Effective number of alleles</li>",
+    #     "<li><b>He</b>: Expected heterozygosity (gene diversity)</li>",
+    #     "<li><b>Ho</b>: Observed heterozygosity</li>",
+    #     "<li><b>Fis</b>: Inbreeding coefficient (per locus-population)</li>",
+    #     "</ul>",
+    #     "Allele frequencies include zeros for missing alleles."
+    #   ))
+    # ),
     
     fluidRow(
       box(

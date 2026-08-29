@@ -15,9 +15,7 @@ linkage_desequilibrium_UI <- function(id) {
       "))
     ),
     
-    module_banner("link", "Linkage Disequilibrium",
-      "Pairwise LD among all loci \u00b7 Permutation p-values",
-      "#EBCC2A"),
+    module_banner("link", "Linkage Disequilibrium",""),
     
     fluidRow(
       box(
@@ -66,39 +64,39 @@ linkage_desequilibrium_UI <- function(id) {
           )
         ),
         
-        br(),
+        br()
         
-        div(
-          style = paste(
-            "margin-top:12px; padding:10px 14px;",
-            "background:#D9D0D3; border-left:4px solid #8D8680;",
-            "border-radius:4px; font-size:13px; line-height:1.6;"
-          ),
-          h5(icon("calculator"), "Additive property of the G-statistic",
-             style = "margin-top:0; color:#39312F; font-weight:600;"),
-          tags$p(
-            "The G-statistic is ", tags$strong("additive across subsamples"),
-            " (populations): the global G over all populations equals the sum ",
-            "of the per-population G values for the same locus pair."
-          ),
-          tags$p(HTML(
-            "<b>G<sub>global</sub> = G<sub>pop1</sub> + G<sub>pop2</sub> + \u2026 + G<sub>popk</sub></b>"
-          )),
-          tags$p(
-            "The permutation null distribution of G\u2090\u2097\u2092\u2071\u2090\u2097 is built ",
-            "by summing the permuted G values ", tags$em("from the same replicate"),
-            " across populations. This yields a valid global p-value that accounts ",
-            "for population structure, without requiring independence between ",
-            "subsamples."
-          ),
-          tags$p(
-            style = "margin-bottom:0; color:#555;",
-            "Note: p-values are Monte Carlo estimates ",
-            HTML("p = (n<sub>\u2265obs</sub> + 1) / B"),
-            ". At least ", tags$strong("B = 1\u202f000 permutations"),
-            " are recommended; B \u2265 10\u202f000 for publication."
-          )
-        )
+        # div(
+        #   style = paste(
+        #     "margin-top:12px; padding:10px 14px;",
+        #     "background:#D9D0D3; border-left:4px solid #8D8680;",
+        #     "border-radius:4px; font-size:13px; line-height:1.6;"
+        #   ),
+        #   h5(icon("calculator"), "Additive property of the G-statistic",
+        #      style = "margin-top:0; color:#39312F; font-weight:600;"),
+        #   tags$p(
+        #     "The G-statistic is ", tags$strong("additive across subsamples"),
+        #     " (populations): the global G over all populations equals the sum ",
+        #     "of the per-population G values for the same locus pair."
+        #   ),
+        #   tags$p(HTML(
+        #     "<b>G<sub>global</sub> = G<sub>pop1</sub> + G<sub>pop2</sub> + \u2026 + G<sub>popk</sub></b>"
+        #   )),
+        #   tags$p(
+        #     "The permutation null distribution of G\u2090\u2097\u2092\u2071\u2090\u2097 is built ",
+        #     "by summing the permuted G values ", tags$em("from the same replicate"),
+        #     " across populations. This yields a valid global p-value that accounts ",
+        #     "for population structure, without requiring independence between ",
+        #     "subsamples."
+        #   ),
+        #   tags$p(
+        #     style = "margin-bottom:0; color:#555;",
+        #     "Note: p-values are Monte Carlo estimates ",
+        #     HTML("p = (n<sub>\u2265obs</sub> + 1) / B"),
+        #     ". At least ", tags$strong("B = 1\u202f000 permutations"),
+        #     " are recommended; B \u2265 10\u202f000 for publication."
+        #   )
+        # )
       )
     ),
     

@@ -314,23 +314,49 @@ server_isolation_by_distance <- function(id, rv) {
       list(slope = unname(coef(m)[2L]), intercept = unname(coef(m)[1L]), r2 = summary(m)$r.squared)
     }
 
+    .ibd_numeric_cols <- reactive({
+      df <- tryCatch(full_pair_table_r(), error = function(e) NULL)
+      if (is.null(df)) return(character(0))
+      names(df)[sapply(df, is.numeric)]
+    })
+
+    output$ibd_col_geo_ui <- renderUI({
+      cols <- .ibd_numeric_cols()
+      selectInput(session$ns("ibd_col_geo"), "geographic distance", choices = cols,
+                  selected = .guess_col(cols, c("^lnDgeo$", "^Dgeo_m$", "Dgeo"), if (length(cols)) cols[1] else NULL))
+    })
+    output$ibd_col_avg_ui <- renderUI({
+      cols <- .ibd_numeric_cols()
+      selectInput(session$ns("ibd_col_avg"), "average", choices = cols,
+                  selected = .guess_col(cols, c("^FR$", "^FR_raw$"), if (length(cols)) cols[1] else NULL))
+    })
+    output$ibd_col_lo_ui <- renderUI({
+      cols <- .ibd_numeric_cols()
+      selectInput(session$ns("ibd_col_lo"), "lower limit", choices = cols,
+                  selected = .guess_col(cols, c("^FR_lo$", "^FR_raw_lo$"), if (length(cols)) cols[1] else NULL))
+    })
+    output$ibd_col_hi_ui <- renderUI({
+      cols <- .ibd_numeric_cols()
+      selectInput(session$ns("ibd_col_hi"), "higher limit", choices = cols,
+                  selected = .guess_col(cols, c("^FR_hi$", "^FR_raw_hi$"), if (length(cols)) cols[1] else NULL))
+    })
+
     ibd_results_r <- eventReactive(input$run_ibd, {
       df <- full_pair_table_r()
-      shiny::validate(shiny::need(
-        any(is.finite(df$Dgeo_m)),
-        "No distances available. Either set Latitude/Longitude at import for at least 2 populations (GPS mode), or upload a Pop1/Pop2/Distance file (external file mode)."))
+      shiny::req(input$ibd_col_geo, input$ibd_col_avg, input$ibd_col_lo, input$ibd_col_hi)
+      shiny::validate(
+        shiny::need(all(c(input$ibd_col_geo, input$ibd_col_avg, input$ibd_col_lo, input$ibd_col_hi) %in% names(df)),
+                    "Selected columns not found."),
+        shiny::need(any(is.finite(df[[input$ibd_col_geo]])),
+          "No usable values in the selected geographic distance column.")
+      )
 
-      use_log <- identical(input$ibd_model, "2D")
-      x <- if (use_log) df$lnDgeo else df$Dgeo_m
-      x_label <- if (use_log) "ln(D_geo)" else "D_geo (m)"
+      x <- suppressWarnings(as.numeric(df[[input$ibd_col_geo]]))
+      x_label <- input$ibd_col_geo
 
-      if (identical(input$ibd_metric, "raw")) {
-        y_avg <- df$FR_raw; y_lo <- df$FR_raw_lo; y_hi <- df$FR_raw_hi
-        y_label <- "F_R (raw FST)"
-      } else {
-        y_avg <- df$FR; y_lo <- df$FR_lo; y_hi <- df$FR_hi
-        y_label <- "F_R (FST-ENA)"
-      }
+      y_avg <- suppressWarnings(as.numeric(df[[input$ibd_col_avg]])); y_label <- input$ibd_col_avg
+      y_lo  <- suppressWarnings(as.numeric(df[[input$ibd_col_lo]]))
+      y_hi  <- suppressWarnings(as.numeric(df[[input$ibd_col_hi]]))
 
       reg_avg <- .fit_line(y_avg, x)
       reg_lo  <- .fit_line(y_lo,  x)
@@ -350,8 +376,10 @@ server_isolation_by_distance <- function(id, rv) {
 
       list(df = df, x = x, y_avg = y_avg, y_lo = y_lo, y_hi = y_hi,
            x_label = x_label, y_label = y_label,
+           col_geo = input$ibd_col_geo, col_avg = input$ibd_col_avg,
+           col_lo = input$ibd_col_lo, col_hi = input$ibd_col_hi,
            reg_avg = reg_avg, reg_lo = reg_lo, reg_hi = reg_hi,
-           summary = summ, use_log = use_log, metric = input$ibd_metric)
+           summary = summ)
     })
 
     output$dt_ibd_table <- DT::renderDT({
@@ -385,8 +413,9 @@ server_isolation_by_distance <- function(id, rv) {
         s <- as.data.frame(r$summary, stringsAsFactors = FALSE)
         hdr <- c(
           "Isolation by Distance \u2014 Rousset (1997) regression",
-          sprintf("Habitat model: %s", if (r$use_log) "Rousset's 2D (F_R ~ ln(D_geo))" else "Rousset's 1D (F_R ~ D_geo)"),
-          sprintf("Genetic distance metric: %s", if (identical(r$metric, "raw")) "F_R (raw FST)" else "F_R (FST-ENA)"),
+          sprintf("Geographic distance column: %s", r$col_geo),
+          sprintf("Genetic distance columns \u2014 average: %s, lower limit: %s, higher limit: %s",
+                   r$col_avg, r$col_lo, r$col_hi),
           sprintf("Data source: %s", if (isTRUE(identical(input$ibd_source, "external"))) "external re-loaded pairwise file" else "Null Alleles module (this session)"),
           sprintf("Slope (b) / Nb / Nem \u2014 average: b=%.6f Nb=%.6f Nem=%.6f",
                    r$reg_avg$slope, 1/r$reg_avg$slope, (1/r$reg_avg$slope)/(2*pi)),
@@ -663,14 +692,21 @@ server_isolation_by_distance <- function(id, rv) {
 
       x <- suppressWarnings(as.numeric(df[[xcol]]))
       y <- suppressWarnings(as.numeric(df[[ycol]]))
-      if (isTRUE(input$mt_log_x)) x <- ifelse(x > 0, log(x), NA_real_)
+      stat <- input$mt_stat
+      # Rousset's 1D/2D fix the ln-transform automatically (1D = raw X,
+      # 2D = ln(X)); for Pearson/Spearman the checkbox applies as usual.
+      use_log <- if (stat %in% c("rousset1d", "rousset2d")) identical(stat, "rousset2d") else isTRUE(input$mt_log_x)
+      if (use_log) x <- ifelse(x > 0, log(x), NA_real_)
+      # Both Rousset options compute the same underlying statistic (the
+      # regression slope) — only the X pre-processing above differs.
+      calc_stat <- if (stat %in% c("rousset1d", "rousset2d")) "b" else stat
 
       all_labels <- sort(unique(trimws(c(as.character(df[[p1c]]), as.character(df[[p2c]])))))
       tmp <- data.frame(P1 = trimws(as.character(df[[p1c]])), P2 = trimws(as.character(df[[p2c]])), X = x, Y = y)
       m_x <- .mt_build_square(tmp, "P1", "P2", "X", all_labels)
       m_y <- .mt_build_square(tmp, "P1", "P2", "Y", all_labels)
 
-      n_perm <- as.integer(input$mt_n_perm); stat <- input$mt_stat
+      n_perm <- as.integer(input$mt_n_perm)
       p_formula <- input$mt_p_formula %||% "plus1"
       seed <- 67144630L  # fixed internal seed, not exposed to the user
 
@@ -680,8 +716,8 @@ server_isolation_by_distance <- function(id, rv) {
       # engine runs depends on the chosen p-value formula: mantel_plus1_cpp
       # for (b+1)/(m+1), mantel_genepop_cpp for the plain b/m proportion.
       res <- tryCatch({
-        mx_eng <- if (identical(stat, "spearman")) .rank_matrix(m_x) else m_x
-        my_eng <- if (identical(stat, "spearman")) .rank_matrix(m_y) else m_y
+        mx_eng <- if (identical(calc_stat, "spearman")) .rank_matrix(m_x) else m_x
+        my_eng <- if (identical(calc_stat, "spearman")) .rank_matrix(m_y) else m_y
         set.seed(seed)
         withProgress(message = "Running Mantel test\u2026", value = 0.3, {
           cpp_res <- if (identical(p_formula, "plain"))
@@ -694,8 +730,8 @@ server_isolation_by_distance <- function(id, rv) {
         lower_idx <- which(lower.tri(matrix(TRUE, n, n)))
         x_all <- m_x[lower_idx]; y_all <- m_y[lower_idx]
         ok <- is.finite(x_all) & is.finite(y_all)
-        stat_obs <- if (stat == "b") unname(coef(lm(y_all[ok] ~ x_all[ok]))[2L])
-                    else if (stat == "spearman") suppressWarnings(cor(x_all[ok], y_all[ok], method = "spearman"))
+        stat_obs <- if (calc_stat == "b") unname(coef(lm(y_all[ok] ~ x_all[ok]))[2L])
+                    else if (calc_stat == "spearman") suppressWarnings(cor(x_all[ok], y_all[ok], method = "spearman"))
                     else suppressWarnings(cor(x_all[ok], y_all[ok]))
         lm0 <- tryCatch(lm(y_all[ok] ~ x_all[ok]), error = function(e) NULL)
         pair_idx <- which(lower.tri(matrix(TRUE, n, n)), arr.ind = TRUE)
@@ -713,16 +749,17 @@ server_isolation_by_distance <- function(id, rv) {
       }, error = function(e) {
         set.seed(seed)
         r <- withProgress(message = "Running Mantel test\u2026", value = 0.2, {
-          rr <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = stat, p_formula = p_formula)
+          rr <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = calc_stat, p_formula = p_formula)
           setProgress(1.0)
           rr
         })
         r$engine <- "r"
         r
       })
-      res$x_label <- paste0(xcol, if (isTRUE(input$mt_log_x)) " (ln)" else "")
+      res$x_label <- paste0(xcol, if (use_log) " (ln)" else "")
       res$y_label <- ycol
-      res$stat_label <- switch(stat, b = "Slope b", spearman = "Spearman rho", "Pearson r")
+      res$stat_label <- switch(stat, rousset1d = "Rousset's 1D", rousset2d = "Rousset's 2D",
+                                spearman = "Spearman rho", "Pearson r")
       res$p_formula <- p_formula
       res
     })
