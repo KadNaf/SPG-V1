@@ -86,13 +86,13 @@ mod_genetic_diversities_ui <- function(id) {
           tabPanel("HS per locus \u2014 individuals",
             br(),
             h4(icon("info-circle"), "HS per locus"),
-            p("Confidence interval obtained by resampling individuals with replacement within each population."),
+            # p("Confidence interval obtained by resampling individuals with replacement within each population."),
             DTOutput(ns("hs_indiv_table")), br()
           ),
           tabPanel("HS per locus \u2014 populations",
             br(),
             h4(icon("info-circle"), "HS per locus"),
-            p("Confidence interval obtained by resampling populations with replacement."),
+            # p("Confidence interval obtained by resampling populations with replacement."),
             DTOutput(ns("hs_pop_table")), br(),
             fluidRow(
               column(6, downloadButton(ns("download_hs_table"),     ".csv", class = "btn-download-primary btn-block")),
@@ -102,13 +102,13 @@ mod_genetic_diversities_ui <- function(id) {
           tabPanel("HS per population",
             br(),
             h4(icon("users"), "HS per population"),
-            p("HS per population, averaged across loci. Confidence interval obtained by resampling individuals with replacement within each population."),
+            # p("HS per population, averaged across loci. Confidence interval obtained by resampling individuals with replacement within each population."),
             DTOutput(ns("hs_per_pop_table")), br()
           ),
           tabPanel("Overall HS \u2014 loci",
             br(),
             h4(icon("retweet"), "Overall HS"),
-            p("Confidence interval obtained by resampling loci with replacement. Applies to the overall multilocus HS only."),
+            # p("Confidence interval obtained by resampling loci with replacement. Applies to the overall multilocus HS only."),
             DTOutput(ns("hs_locus_table")), br()
           ),
           tabPanel("HS visualization",
@@ -119,7 +119,7 @@ mod_genetic_diversities_ui <- function(id) {
           tabPanel("HT results",
             br(),
             h4(icon("info-circle"), "Total gene diversity (HT)"),
-            p("HT per locus. Confidence interval obtained by resampling populations with replacement. The Overall row also shows CI from resampling loci with replacement."),
+            # p("HT per locus. Confidence interval obtained by resampling populations with replacement. The Overall row also shows CI from resampling loci with replacement."),
             DTOutput(ns("ht_results_table")), br(),
             fluidRow(
               column(6, downloadButton(ns("download_ht_table"),     ".csv", class = "btn-download-primary btn-block")),
@@ -133,8 +133,8 @@ mod_genetic_diversities_ui <- function(id) {
           ),
           tabPanel("Locus bootstrap",
             h4(icon("retweet"), "Multilocus estimators \u2014 locus bootstrap"),
-            p("Bootstrap SE and percentile CI for FST, FIT, FIS, HS, HT
-              computed by resampling L loci with replacement (B replicates)."),
+            # p("Bootstrap SE and percentile CI for FST, FIT, FIS, HS, HT
+            #   computed by resampling L loci with replacement (B replicates)."),
             DTOutput(ns("locus_boot_table"))
           )
         ),

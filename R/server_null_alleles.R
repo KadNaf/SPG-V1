@@ -1169,27 +1169,7 @@ server_null_alleles <- function(id, rv) {
     #  method lines don't belong in it).
     # ══════════════════════════════════════════════════════════════════════════
     meta_header <- function(r, file_desc, fst_dcse = TRUE) {
-      ci_pct <- paste0(round((1 - r$alpha) * 100, 3), "%")
-      treat_summary <- paste(sapply(r$markers, function(loc) {
-        cd <- as.character(r$treats[loc] %||% "absent")
-        sprintf("%s:%s", loc, if(cd=="absent") "000000" else "999999")
-      }), collapse=", ")
-      c(
-        file_desc,
-        "Method: Expectation-Maximization (EM) algorithm - Dempster, Laird & Rubin (1977)",
-        if (fst_dcse) "ENA correction (Excluding Null Alleles) - Chapuis & Estoup (2007) / FreeNA",
-        if (fst_dcse) "INA correction (Including Null Alleles) - Chapuis & Estoup (2007) / FreeNA",
-        if (fst_dcse) "FST: Weir & Cockerham (1984) unbiased moment estimator",
-        if (fst_dcse) "DCSE: Cavalli-Sforza & Edwards (1967) chord genetic distance",
-        if (fst_dcse) paste0("Bootstrap replicates (over loci): ", r$nboot),
-        if (fst_dcse) paste0("Bootstrap replicates (over sub-samples): ", r$nboot_subs %||% r$nboot),
-        if (fst_dcse) paste0("Bootstrap random seed (set.seed): ", r$seed %||% "n/a",
-                              " \u2014 rerun with the same seed and nboot to reproduce these CI exactly"),
-        paste0("Confidence interval: ", ci_pct, " (alpha = ", r$alpha, ")"),
-        "Locus coding for missing data (Miss) (000000=ignored; 999999=null homozygote):",
-        paste0("  ", treat_summary),
-        ""
-      )
+      c(file_desc, "")
     }
 
     write_with_header <- function(hdr, df, file, sep = "\t") {
@@ -1416,76 +1396,257 @@ server_null_alleles <- function(id, rv) {
           legend = list(x=0.02, y=0.98))
     })
 
-    # ── Save all files automatically to the chosen output folder (optional;
-    #    the .txt download buttons below always work regardless) ─────────────
-    #    Simplified vs. the previous version: a single "Home" root (dropped
-    #    the confusing "R installation" entry) and much clearer wording about
-    #    what "this computer" means, since this app is normally run locally.
-    
-    volumes_r <- c(Home = path.expand("~"), "R installation" = R.home(), shinyFiles::getVolumes()())
-    shinyFiles::shinyDirChoose(input, "out_dir_browse", roots = volumes_r, session = session)
-
-    out_dir_r <- reactive({
-      sel <- input$out_dir_browse
-      if (is.null(sel) || identical(sel, 0)) return(NULL)
-      tryCatch(shinyFiles::parseDirPath(volumes_r, sel), error = function(e) NULL)
-    })
-
-    observeEvent(input$out_dir_browse, {
-      d <- out_dir_r()
-      if (!is.null(d) && length(d) && nzchar(d))
-        updateTextInput(session, "out_dir_display", value = d)
-    })
-
-    observeEvent(results_r(), {
-      dir <- trimws(input$out_dir_display %||% "")
-      if (!nzchar(dir) || !dir.exists(dir)) return(invisible(NULL))
-      tryCatch({
-        d1 <- file1_data(); d2 <- file2_data(); d3 <- file3_data()
-        d4 <- file4_data(); d5 <- file5_data()
-
-        write_with_header(c(d1$header, "Section 1: p_nulls per locus x population",
-                             "N_exp_blanks: expected number of null homozygotes = N * p_nulls^2", ""),
-                           d1$t1, file.path(dir, out_filename("null_allele_frequencies")), sep="\t")
-        write("", file = file.path(dir, out_filename("null_allele_frequencies")), append = TRUE)
-        write("Section 2: N-weighted mean per locus",
-              file = file.path(dir, out_filename("null_allele_frequencies")), append = TRUE)
-        write.table(d1$t2, file = file.path(dir, out_filename("null_allele_frequencies")),
-                    sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE, col.names = TRUE)
-
-        write_with_header(d2$header, d2$data, file.path(dir, out_filename("global_FST_ENA_CI")), sep="\t")
-        write_with_header(d3$header, d3$data, file.path(dir, out_filename("pairwise_long_format")), sep="\t")
-
-        con4 <- file(file.path(dir, out_filename("per_locus_half_matrices")), open="w", encoding="UTF-8")
-        writeLines(d4$header, con=con4, useBytes=TRUE)
-        for (loc in d4$markers) {
-          for (sc in c("FST_raw","FST_ENA")) {
-            writeLines(half_matrix_txt(d4$fst_df, sc, d4$pops, loc), con=con4, useBytes=TRUE)
-            writeLines("", con=con4)
-          }
-          for (sc in c("DCSE_raw","DCSE_INA")) {
-            writeLines(half_matrix_txt(d4$dc_df, sc, d4$pops, loc), con=con4, useBytes=TRUE)
-            writeLines("", con=con4)
-          }
-        }
-        close(con4)
-
-        write_with_header(d5$header, d5$data, file.path(dir, out_filename("bootstrap_distributions")), sep="\t")
-
-        showNotification(
-          paste0("Saved 5 files to: ", dir), type = "message", duration = 6)
-      }, error = function(e) {
-        showNotification(paste0("Could not save to folder: ", conditionMessage(e)),
-                          type = "error", duration = 8)
-      })
-    }, ignoreInit = TRUE)
-
     # ── Show the actual computed filename on each output-file card ────────────
     output$ui_filename_1 <- renderUI(tags$code(out_filename("null_allele_frequencies")))
     output$ui_filename_2 <- renderUI(tags$code(out_filename("global_FST_ENA_CI")))
     output$ui_filename_3 <- renderUI(tags$code(out_filename("pairwise_long_format")))
     output$ui_filename_4 <- renderUI(tags$code(out_filename("per_locus_half_matrices")))
     output$ui_filename_5 <- renderUI(tags$code(out_filename("bootstrap_distributions")))
+    output$ui_filename_6 <- renderUI(tags$code(out_filename("run_parameters")))
+    output$ui_filename_7 <- renderUI(tags$code(out_filename("full_pairwise_table")))
+
+    # ════════════════════════════════════════════════════════════════════════
+    #  GPS centroids + Vincenty geodesic distance — copied from the Isolation
+    #  by Distance module (server_isolation_by_distance.R) so the Full
+    #  pairwise table can be generated here too, without cross-module
+    #  dependencies.
+    # ════════════════════════════════════════════════════════════════════════
+    meta_cols_r <- reactive({
+      db_ready()
+      con <- con_r()
+      tryCatch(DBI::dbGetQuery(con, sprintf(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = '%s'",
+        tbl_meta_r()))$column_name, error = function(e) character(0))
+    })
+
+    .guess_gps_col <- function(cols, patterns) {
+      for (pat in patterns) { hit <- grep(pat, cols, value = TRUE, ignore.case = TRUE); if (length(hit)) return(hit[1L]) }
+      if (length(cols)) cols[1] else NULL
+    }
+
+    output$gps_lon_col_ui <- renderUI({
+      cols <- meta_cols_r()
+      selectInput(session$ns("gps_lon_col"), "Longitude column:", choices = cols,
+                  selected = .guess_gps_col(cols, c("^Longitude$", "^Lon$", "^Long$")))
+    })
+    output$gps_lat_col_ui <- renderUI({
+      cols <- meta_cols_r()
+      selectInput(session$ns("gps_lat_col"), "Latitude column:", choices = cols,
+                  selected = .guess_gps_col(cols, c("^Latitude$", "^Lat$")))
+    })
+
+    coords_r <- reactive({
+      if (!isTRUE(identical(input$gps_available, "yes"))) return(NULL)
+      db_ready()
+      con  <- con_r()
+      latc <- input$gps_lat_col; lonc <- input$gps_lon_col
+      shiny::req(latc, lonc)
+      cols <- meta_cols_r()
+      if (!all(c(latc, lonc) %in% cols)) return(NULL)
+      df <- tryCatch(DBI::dbGetQuery(con, sprintf(
+        "SELECT Population,
+                AVG(CAST(%s AS DOUBLE)) AS Latitude,
+                AVG(CAST(%s AS DOUBLE)) AS Longitude
+         FROM %s
+         WHERE Population IS NOT NULL
+           AND %s IS NOT NULL AND %s IS NOT NULL
+         GROUP BY Population ORDER BY Population",
+        sql_ident(con, latc), sql_ident(con, lonc), sql_ident(con, tbl_meta_r()),
+        sql_ident(con, latc), sql_ident(con, lonc))), error = function(e) NULL)
+      if (is.null(df) || nrow(df) < 2L) return(NULL)
+      df
+    })
+
+    .vincenty_m <- function(lat1, lon1, lat2, lon2) {
+      a <- 6378137.0; f <- 1/298.257223563; b <- (1 - f) * a
+      L  <- (lon2 - lon1) * pi / 180
+      U1 <- atan((1 - f) * tan(lat1 * pi / 180))
+      U2 <- atan((1 - f) * tan(lat2 * pi / 180))
+      sinU1 <- sin(U1); cosU1 <- cos(U1); sinU2 <- sin(U2); cosU2 <- cos(U2)
+      lam <- L
+      for (i in seq_len(200L)) {
+        sinLam <- sin(lam); cosLam <- cos(lam)
+        sinSigma <- sqrt((cosU2*sinLam)^2 + (cosU1*sinU2 - sinU1*cosU2*cosLam)^2)
+        if (sinSigma == 0) return(0)
+        cosSigma <- sinU1*sinU2 + cosU1*cosU2*cosLam
+        sigma <- atan2(sinSigma, cosSigma)
+        sinAlpha <- cosU1*cosU2*sinLam/sinSigma
+        cosSqAlpha <- 1 - sinAlpha^2
+        cos2SigmaM <- if (cosSqAlpha != 0) cosSigma - 2*sinU1*sinU2/cosSqAlpha else 0
+        C <- f/16*cosSqAlpha*(4 + f*(4 - 3*cosSqAlpha))
+        lamPrev <- lam
+        lam <- L + (1 - C)*f*sinAlpha*(sigma + C*sinSigma*(cos2SigmaM + C*cosSigma*(-1 + 2*cos2SigmaM^2)))
+        if (abs(lam - lamPrev) < 1e-12) break
+      }
+      uSq <- cosSqAlpha*(a^2 - b^2)/b^2
+      A <- 1 + uSq/16384*(4096 + uSq*(-768 + uSq*(320 - 175*uSq)))
+      B <- uSq/1024*(256 + uSq*(-128 + uSq*(74 - 47*uSq)))
+      deltaSigma <- B*sinSigma*(cos2SigmaM + B/4*(cosSigma*(-1 + 2*cos2SigmaM^2) -
+                    B/6*cos2SigmaM*(-3 + 4*sinSigma^2)*(-3 + 4*cos2SigmaM^2)))
+      b * A * (sigma - deltaSigma)
+    }
+
+    .linearise_na <- function(x) { x <- pmin(pmax(x, 0), 0.9999); x / (1 - x) }
+
+    gps_available_r <- reactive({ !is.null(tryCatch(coords_r(), error = function(e) NULL)) })
+
+    output$ui_gps_status <- renderUI({
+      ok <- isTRUE(gps_available_r())
+      if (ok) {
+        tags$p(style="color:#166534;font-size:11px;margin-top:4px;", icon("check-circle"),
+          " GPS coordinates found \u2014 D_geo will be computed (Vincenty geodesic distance).")
+      } else {
+        tags$p(style="color:#92400e;font-size:11px;margin-top:4px;", icon("exclamation-triangle"),
+          " No Latitude/Longitude found at import \u2014 the Full pairwise table will be generated without D_geo/ln(D_geo).")
+      }
+    })
+
+    # ── Full pairwise table — same construction as the Isolation by Distance
+    #    module's full_pair_table_internal_r(), built directly from
+    #    results_r() (no rv indirection needed, we're already inside the
+    #    Null Alleles module that produces those results).
+    full_pairwise_r <- reactive({
+      r <- results_r()
+      fst_long <- r$fst_pair$long
+      dc_long  <- r$dc_pair$long
+      bf       <- r$boot_pair_fst
+      bd       <- r$boot_pair_dc
+
+      df <- merge(fst_long, dc_long[, c("Pop1","Pop2","DCSE_raw","DCSE_INA")],
+                  by = c("Pop1","Pop2"), sort = FALSE)
+
+      if (!is.null(bf) && nrow(bf) > 0L) {
+        bf2 <- bf[, c("Pop1","Pop2","FST_raw_CI_lo_loci","FST_raw_CI_hi_loci",
+                      "FST_ENA_CI_lo_loci","FST_ENA_CI_hi_loci")]
+        names(bf2)[3:6] <- c("FST_raw_lo","FST_raw_hi","FST_ENA_lo","FST_ENA_hi")
+        df <- merge(df, bf2, by = c("Pop1","Pop2"), sort = FALSE)
+      } else {
+        df$FST_raw_lo <- NA_real_; df$FST_raw_hi <- NA_real_
+        df$FST_ENA_lo <- NA_real_; df$FST_ENA_hi <- NA_real_
+      }
+      if (!is.null(bd) && nrow(bd) > 0L) {
+        bd2 <- bd[, c("Pop1","Pop2","DCSE_raw_CI_lo_loci","DCSE_raw_CI_hi_loci",
+                      "DCSE_INA_CI_lo_loci","DCSE_INA_CI_hi_loci")]
+        names(bd2)[3:6] <- c("DCSE_raw_lo","DCSE_raw_hi","DCSE_INA_lo","DCSE_INA_hi")
+        df <- merge(df, bd2, by = c("Pop1","Pop2"), sort = FALSE)
+      } else {
+        df$DCSE_raw_lo <- NA_real_; df$DCSE_raw_hi <- NA_real_
+        df$DCSE_INA_lo <- NA_real_; df$DCSE_INA_hi <- NA_real_
+      }
+
+      df$FR        <- .linearise_na(df$FST_ENA)
+      df$FR_lo     <- .linearise_na(df$FST_ENA_lo)
+      df$FR_hi     <- .linearise_na(df$FST_ENA_hi)
+      df$FR_raw    <- .linearise_na(df$FST_raw)
+      df$FR_raw_lo <- .linearise_na(df$FST_raw_lo)
+      df$FR_raw_hi <- .linearise_na(df$FST_raw_hi)
+
+      coords <- tryCatch(coords_r(), error = function(e) NULL)
+      if (!is.null(coords)) {
+        get_d <- function(p1, p2) {
+          c1 <- coords[coords$Population == p1, ]; c2 <- coords[coords$Population == p2, ]
+          if (nrow(c1) >= 1L && nrow(c2) >= 1L)
+            .vincenty_m(c1$Latitude[1L], c1$Longitude[1L], c2$Latitude[1L], c2$Longitude[1L])
+          else NA_real_
+        }
+        df$Dgeo_m <- mapply(get_d, df$Pop1, df$Pop2)
+        df$lnDgeo <- ifelse(df$Dgeo_m > 0, log(df$Dgeo_m), NA_real_)
+      } else {
+        df$Dgeo_m <- NA_real_; df$lnDgeo <- NA_real_
+      }
+      df
+    })
+
+    include_pairwise_r <- reactive({
+      isTRUE(input$include_pairwise_table) && isTRUE(gps_available_r())
+    })
+
+    n_files_r <- reactive({ if (isTRUE(include_pairwise_r())) 7L else 6L })
+
+    output$ui_output_files_title <- renderUI({
+      div(style = "background-color: #FFFFFF; padding: 10px; color: #333a43; font-weight: 600;",
+          icon("file-export"),
+          sprintf("%d files generated by \u201cCompute\u201d", n_files_r()))
+    })
+
+    output$ui_file7_card <- renderUI({
+      if (!isTRUE(include_pairwise_r())) return(NULL)
+      tags$div(class = "spg-module-card na-filecard", style = "margin-bottom:14px; max-width:400px;",
+        # tags$div(class = "card-icon", icon("route")),
+        h5("Full pairwise table"),
+        p("FST, FST-ENA, DCSE, DCSE-INA, F", tags$sub("R"), ", D_geo and ln(D_geo) \u2014 one row per pair."),
+        tags$div(class = "fname", uiOutput(session$ns("ui_filename_7"), inline = TRUE)),
+        uiOutput(session$ns("ui_dl_file7"))
+      )
+    })
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  FILE 6 — Run parameters
+    # ══════════════════════════════════════════════════════════════════════════
+    file6_data <- reactive({
+      r <- results_r()
+      loci_df <- data.frame(
+        Locus = r$markers,
+        Missing_code = vapply(r$markers, function(loc) {
+          cd <- as.character(r$treats[loc] %||% "absent")
+          if (cd == "absent") "000000" else "999999"
+        }, character(1)),
+        stringsAsFactors = FALSE
+      )
+      ci_pct <- paste0(round((1 - r$alpha) * 100, 3), "%")
+      methods_lines <- c(
+        "Method: Expectation-Maximization (EM) algorithm - Dempster, Laird & Rubin (1977)",
+        "ENA correction (Excluding Null Alleles) - Chapuis & Estoup (2007) / FreeNA",
+        "INA correction (Including Null Alleles) - Chapuis & Estoup (2007) / FreeNA",
+        "FST: Weir & Cockerham (1984) unbiased moment estimator",
+        "DCSE: Cavalli-Sforza & Edwards (1967) chord genetic distance"
+      )
+      params_df <- data.frame(
+        Parameter = c("Dataset",
+                      "Bootstrap replicates (over loci)", "Bootstrap replicates (over sub-samples)",
+                      "Bootstrap random seed (set.seed)",
+                      "Confidence interval", "Critical level (alpha)"),
+        Value = c(rv$dataset_filename %||% "default_dataset",
+                  r$nboot, r$nboot_subs %||% r$nboot,
+                  paste0(r$seed %||% "n/a", " \u2014 rerun with the same seed and nboot to reproduce these CI exactly"),
+                  ci_pct, r$alpha),
+        stringsAsFactors = FALSE
+      )
+      list(header = c("List of parameters you chose to use", ""),
+           methods = methods_lines, loci = loci_df, params = params_df)
+    })
+
+    output$dl_file6_txt <- downloadHandler(
+      filename = function() out_filename("run_parameters"),
+      content  = function(file) {
+        d <- file6_data()
+        con <- file(file, open = "w", encoding = "UTF-8"); on.exit(close(con))
+        writeLines(d$header, con = con, useBytes = TRUE)
+        writeLines("Methods:", con = con)
+        writeLines(d$methods, con = con, useBytes = TRUE)
+        writeLines("", con = con)
+        writeLines("General parameters:", con = con)
+        write.table(d$params, file = con, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE)
+        writeLines("", con = con)
+        writeLines("Missing genotype coding per locus:", con = con)
+        write.table(d$loci, file = con, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE)
+      }
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  FILE 7 — Full pairwise table (only when included)
+    # ══════════════════════════════════════════════════════════════════════════
+    file7_data <- reactive({
+      shiny::req(include_pairwise_r())
+      list(header = meta_header(results_r(), "Full pairwise table (FST, FST-ENA, DCSE, DCSE-INA, FR, D_geo, ln(D_geo))"),
+           data   = full_pairwise_r())
+    })
+
+    output$dl_file7_txt <- downloadHandler(
+      filename = function() out_filename("full_pairwise_table"),
+      content  = function(file) { d <- file7_data()
+        write_with_header(d$header, d$data, file, sep="\t") }
+    )
 
     # ── Download buttons UI (fallback / always available) ─────────────────────
     make_dl_ui <- function(txt_id) {
@@ -1501,6 +1662,96 @@ server_null_alleles <- function(id, rv) {
     output$ui_dl_file3 <- make_dl_ui("dl_file3_txt")
     output$ui_dl_file4 <- make_dl_ui("dl_file4_txt")
     output$ui_dl_file5 <- make_dl_ui("dl_file5_txt")
+    output$ui_dl_file6 <- make_dl_ui("dl_file6_txt")
+    output$ui_dl_file7 <- renderUI({
+      req(results_r())
+      if (!isTRUE(include_pairwise_r())) return(NULL)
+      tags$div(class="na-dl-row", downloadButton(session$ns("dl_file7_txt"), ".txt", class="btn btn-default btn-xs"))
+    })
+
+    # ── Results tab: Full pairwise table ───────────────────────────────────
+    output$ui_full_pairwise_note <- renderUI({
+      if (!isTRUE(gps_available_r())) {
+        tags$div(class = "na-info", icon("exclamation-triangle"),
+          " No GPS Latitude/Longitude found at import \u2014 D_geo and ln(D_geo) below are NA.")
+      }
+    })
+    output$dt_full_pairwise <- DT::renderDT({
+      df <- full_pairwise_r()
+      DT::datatable(df, rownames = FALSE,
+        options = list(scrollX = TRUE, pageLength = 15, dom = "lrtip"),
+        class = "compact stripe hover") |>
+        DT::formatRound(setdiff(names(df)[sapply(df, is.numeric)], character(0)), 6)
+    })
+
+    # ── Download everything at once, as one .zip ───────────────────────────
+    output$dl_all_zip <- downloadHandler(
+      filename = function() paste0(out_root_r(), out_suffix_r(), "SPG_null_alleles_export_", Sys.Date(), ".zip"),
+      content  = function(file) {
+        req(results_r())
+        tmpdir <- tempfile("spg_export_"); dir.create(tmpdir)
+        on.exit(unlink(tmpdir, recursive = TRUE), add = TRUE)
+
+        d1 <- file1_data(); d2 <- file2_data(); d3 <- file3_data()
+        d4 <- file4_data(); d5 <- file5_data(); d6 <- file6_data()
+
+        p1 <- file.path(tmpdir, out_filename("null_allele_frequencies"))
+        write_with_header(c(d1$header, "Section 1: p_nulls per locus x population",
+                             "N_exp_blanks: expected number of null homozygotes = N * p_nulls^2", ""),
+                           d1$t1, p1, sep = "\t")
+        write("", file = p1, append = TRUE)
+        write("Section 2: N-weighted mean per locus", file = p1, append = TRUE)
+        write.table(d1$t2, file = p1, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE, col.names = TRUE)
+
+        p2 <- file.path(tmpdir, out_filename("global_FST_ENA_CI"))
+        write_with_header(d2$header, d2$data, p2, sep = "\t")
+
+        p3 <- file.path(tmpdir, out_filename("pairwise_long_format"))
+        write_with_header(d3$header, d3$data, p3, sep = "\t")
+
+        p4 <- file.path(tmpdir, out_filename("per_locus_half_matrices"))
+        con4 <- file(p4, open = "w", encoding = "UTF-8")
+        writeLines(d4$header, con = con4, useBytes = TRUE)
+        for (loc in d4$markers) {
+          for (sc in c("FST_raw","FST_ENA")) {
+            writeLines(half_matrix_txt(d4$fst_df, sc, d4$pops, loc), con=con4, useBytes=TRUE)
+            writeLines("", con=con4)
+          }
+          for (sc in c("DCSE_raw","DCSE_INA")) {
+            writeLines(half_matrix_txt(d4$dc_df, sc, d4$pops, loc), con=con4, useBytes=TRUE)
+            writeLines("", con=con4)
+          }
+        }
+        close(con4)
+
+        p5 <- file.path(tmpdir, out_filename("bootstrap_distributions"))
+        write_with_header(d5$header, d5$data, p5, sep = "\t")
+
+        p6 <- file.path(tmpdir, out_filename("run_parameters"))
+        con6 <- file(p6, open = "w", encoding = "UTF-8")
+        writeLines(d6$header, con = con6, useBytes = TRUE)
+        writeLines("Methods:", con = con6)
+        writeLines(d6$methods, con = con6, useBytes = TRUE)
+        writeLines("", con = con6)
+        writeLines("General parameters:", con = con6)
+        write.table(d6$params, file = con6, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE)
+        writeLines("", con = con6)
+        writeLines("Missing genotype coding per locus:", con = con6)
+        write.table(d6$loci, file = con6, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE)
+        close(con6)
+
+        all_files <- c(p1, p2, p3, p4, p5, p6)
+
+        if (isTRUE(include_pairwise_r())) {
+          d7 <- file7_data()
+          p7 <- file.path(tmpdir, out_filename("full_pairwise_table"))
+          write_with_header(d7$header, d7$data, p7, sep = "\t")
+          all_files <- c(all_files, p7)
+        }
+
+        zip::zip(zipfile = file, files = basename(all_files), root = tmpdir)
+      }
+    )
 
     # ── Run status ─────────────────────────────────────────────────────────────
     output$ui_run_status <- renderUI({
@@ -1513,8 +1764,8 @@ server_null_alleles <- function(id, rv) {
         tags$strong("Computation complete."),
         sprintf(" %d loci \u00b7 %d populations \u00b7 %d loci-replicates \u00b7 %d sub-sample-replicates \u00b7 %s CI.",
                 length(r$markers), length(r$pops), r$nboot, r$nboot_subs %||% r$nboot, ci_pct),
-        if (nzchar(dir)) sprintf(" 5 files saved to %s.", dir)
-        else " Use the .txt buttons below each result to download the 5 output files."
+        if (nzchar(dir)) sprintf(" the files saved to %s.", dir)
+        else " Use the .txt buttons below each result to download the output files."
       )
     })
 

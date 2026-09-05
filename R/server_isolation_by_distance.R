@@ -256,48 +256,20 @@ server_isolation_by_distance <- function(id, rv) {
       df$FR_raw_lo <- .linearise(df$FST_raw_lo)
       df$FR_raw_hi <- .linearise(df$FST_raw_hi)
 
-      use_external_dgeo <- isTRUE(identical(input$ibd_dgeo_source, "external"))
-
-      if (use_external_dgeo) {
-        shiny::req(input$ibd_dgeo_file)
-        ext <- .mt_read_file(input$ibd_dgeo_file, input$ibd_dgeo_sep, input$ibd_dgeo_header)
-        shiny::validate(shiny::need(ncol(ext) >= 3L,
-          "External distance file must have at least 3 columns: Pop1, Pop2, Distance."))
-        nm <- names(ext)
-        pop1_col <- .guess_col(nm, c("^Pop1$", "^Farm1$", "^ID1$"), nm[1])
-        pop2_col <- .guess_col(nm, c("^Pop2$", "^Farm2$", "^ID2$"), nm[2])
-        dist_col <- .guess_col(nm, c("^Distance$", "^Dgeo", "^Dist$"), nm[3])
-
-        key <- function(a, b) { a <- trimws(as.character(a)); b <- trimws(as.character(b))
-                                 ifelse(a <= b, paste(a, b, sep = "__"), paste(b, a, sep = "__")) }
-
-        ext2 <- data.frame(
-          .key     = key(ext[[pop1_col]], ext[[pop2_col]]),
-          Dgeo_ext = suppressWarnings(as.numeric(ext[[dist_col]])),
-          stringsAsFactors = FALSE
-        )
-        ext2 <- ext2[!duplicated(ext2$.key), , drop = FALSE]
-
-        df$.key <- key(df$Pop1, df$Pop2)
-        df <- merge(df, ext2, by = ".key", sort = FALSE)
-        df$.key <- NULL
-        df$Dgeo_m <- df$Dgeo_ext
-        df$Dgeo_ext <- NULL
-        df$lnDgeo <- ifelse(is.finite(df$Dgeo_m) & df$Dgeo_m > 0, log(df$Dgeo_m), NA_real_)
-      } else {
-        coords <- tryCatch(coords_r(), error = function(e) NULL)
-        if (!is.null(coords)) {
-          get_d <- function(p1, p2) {
-            c1 <- coords[coords$Population == p1, ]; c2 <- coords[coords$Population == p2, ]
-            if (nrow(c1) >= 1L && nrow(c2) >= 1L)
-              .vincenty_m(c1$Latitude[1L], c1$Longitude[1L], c2$Latitude[1L], c2$Longitude[1L])
-            else NA_real_
-          }
-          df$Dgeo_m <- mapply(get_d, df$Pop1, df$Pop2)
-          df$lnDgeo <- ifelse(df$Dgeo_m > 0, log(df$Dgeo_m), NA_real_)
-        } else {
-          df$Dgeo_m <- NA_real_; df$lnDgeo <- NA_real_
+      # D_geo is always the GPS/Vincenty geodesic distance here — the exact
+      # same computation as the Null Alleles module's Full pairwise table.
+      coords <- tryCatch(coords_r(), error = function(e) NULL)
+      if (!is.null(coords)) {
+        get_d <- function(p1, p2) {
+          c1 <- coords[coords$Population == p1, ]; c2 <- coords[coords$Population == p2, ]
+          if (nrow(c1) >= 1L && nrow(c2) >= 1L)
+            .vincenty_m(c1$Latitude[1L], c1$Longitude[1L], c2$Latitude[1L], c2$Longitude[1L])
+          else NA_real_
         }
+        df$Dgeo_m <- mapply(get_d, df$Pop1, df$Pop2)
+        df$lnDgeo <- ifelse(df$Dgeo_m > 0, log(df$Dgeo_m), NA_real_)
+      } else {
+        df$Dgeo_m <- NA_real_; df$lnDgeo <- NA_real_
       }
 
       df
@@ -363,10 +335,10 @@ server_isolation_by_distance <- function(id, rv) {
       reg_hi  <- .fit_line(y_hi,  x)
 
       nbnem <- function(reg) {
-        b <- round(reg$slope, 4)
+        b <- round(reg$slope, 6)
         if (is.na(b) || b == 0) return(c(b = b, Nb = NA_real_, Nem = NA_real_))
         Nb <- 1 / b
-        c(b = b, Nb = Nb, Nem = Nb / (2 * pi))
+        c(b = b, Nb = round(Nb, 2), Nem = round(Nb / (2 * pi), 2))
       }
       summ <- rbind(
         c(Line = "Average",  nbnem(reg_avg)),
@@ -382,65 +354,68 @@ server_isolation_by_distance <- function(id, rv) {
            summary = summ)
     })
 
-    output$dt_ibd_table <- DT::renderDT({
-      r <- ibd_results_r()
-      d <- r$df
-      out <- data.frame(
-        Farm1          = d$Pop1,
-        Farm2          = d$Pop2,
-        D_geo          = round(d$Dgeo_m, 4),
-        `FST-FreeNA`   = round(d$FST_ENA, 6),
-        `FST-FreeNA-i` = round(d$FST_ENA_lo, 6),
-        `FST-FreeNA-s` = round(d$FST_ENA_hi, 6),
-        `ln(D_geo)`    = round(d$lnDgeo, 6),
-        F_R            = round(d$FR, 6),
-        `F_R-i`        = round(d$FR_lo, 6),
-        `F_R-s`        = round(d$FR_hi, 6),
-        `D_CSE-INA`    = round(d$DCSE_INA, 6),
-        D_CSE          = round(d$DCSE_raw, 6),
-        check.names = FALSE, stringsAsFactors = FALSE
-      )
-      DT::datatable(out, rownames = FALSE,
-        options = list(scrollX = TRUE, pageLength = 28, dom = "lrtip"),
-        class = "compact stripe hover") |>
-        DT::formatRound(c("D_geo","FST-FreeNA","FST-FreeNA-i","FST-FreeNA-s",
-                           "ln(D_geo)","F_R","F_R-i","F_R-s","D_CSE-INA","D_CSE"), 6)
-    })
+    # ── Results file: the regression summary table only ────────────────────
     output$dl_ibd_txt <- downloadHandler(
-      filename = function() ibd_out_filename("regression"),
+      filename = function() ibd_out_filename("IBD-Res"),
       content  = function(file) {
         r <- ibd_results_r()
         s <- as.data.frame(r$summary, stringsAsFactors = FALSE)
+        con <- file(file, open = "w", encoding = "UTF-8"); on.exit(close(con))
+        writeLines(c("Isolation by Distance \u2014 Regression results", ""), con = con, useBytes = TRUE)
+        writeLines("Regression summary (slope / b / Nb / Nem for average and CI bounds):", con = con)
+        write.table(s, file = con, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE)
+      }
+    )
+
+    # ── Parameters file: everything about how this run was configured ──────
+    output$dl_ibd_params_txt <- downloadHandler(
+      filename = function() ibd_out_filename("IBD-parameters"),
+      content  = function(file) {
+        r <- ibd_results_r()
         hdr <- c(
-          "Isolation by Distance \u2014 Rousset (1997) regression",
+          "Isolation by Distance \u2014 Rousset (1997) regression \u2014 parameters used",
           sprintf("Geographic distance column: %s", r$col_geo),
           sprintf("Genetic distance columns \u2014 average: %s, lower limit: %s, higher limit: %s",
                    r$col_avg, r$col_lo, r$col_hi),
           sprintf("Data source: %s", if (isTRUE(identical(input$ibd_source, "external"))) "external re-loaded pairwise file" else "Null Alleles module (this session)"),
-          sprintf("Slope (b) / Nb / Nem \u2014 average: b=%.6f Nb=%.6f Nem=%.6f",
+          sprintf("Slope (b) / Nb / Nem \u2014 average: b=%.6f Nb=%.2f Nem=%.2f",
                    r$reg_avg$slope, 1/r$reg_avg$slope, (1/r$reg_avg$slope)/(2*pi)),
           ""
         )
         con <- file(file, open = "w", encoding = "UTF-8"); on.exit(close(con))
         writeLines(hdr, con = con, useBytes = TRUE)
-        writeLines("Regression summary (slope / b / Nb / Nem for average and CI bounds):", con = con)
-        write.table(s, file = con, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE)
-        writeLines("", con = con)
-        writeLines("Full pairwise table:", con = con)
-        write.table(r$df, file = con, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE)
       }
     )
+
+    output$ui_ibd_key_values <- renderUI({
+      r <- ibd_results_r()
+      tags$div(style = "font-size:13px; color:#333; margin-bottom:14px;",
+        tags$div(tags$strong("Geographic distance (X): "), r$col_geo),
+        tags$div(tags$strong("Genetic distance (Y) \u2014 average: "), r$col_avg,
+                 tags$strong("  \u2014 lower limit: "), r$col_lo,
+                 tags$strong("  \u2014 higher limit: "), r$col_hi),
+        tags$div(tags$strong("Data source: "),
+                 if (isTRUE(identical(input$ibd_source, "external"))) "External re-loaded pairwise file"
+                 else "Null Alleles module (this session)"),
+        tags$div(tags$strong("Pairs used: "), nrow(r$df)),
+        tags$div(tags$strong("Slope (b) / Nb / Nem \u2014 average: "),
+                 sprintf("b = %.6f, Nb = %.2f, Nem = %.2f",
+                         r$reg_avg$slope, 1/r$reg_avg$slope, (1/r$reg_avg$slope)/(2*pi)))
+      )
+    })
 
     output$dt_ibd_reg <- DT::renderDT({
       r <- ibd_results_r()
       s <- as.data.frame(r$summary, stringsAsFactors = FALSE)
-      s$b   <- round(as.numeric(s$b), 4)
-      s$Nb  <- round(as.numeric(s$Nb), 4)
-      s$Nem <- round(as.numeric(s$Nem), 4)
+      s$b   <- round(as.numeric(s$b), 6)
+      s$Nb  <- round(as.numeric(s$Nb), 2)
+      s$Nem <- round(as.numeric(s$Nem), 2)
       names(s) <- c("slope", "b", "Nb", "Nem")
       DT::datatable(s, rownames = FALSE,
         options = list(dom = "t", pageLength = 3, ordering = FALSE),
-        class = "compact stripe")
+        class = "compact stripe") |>
+        DT::formatRound("b", 6) |>
+        DT::formatRound(c("Nb", "Nem"), 2)
     })
 
     output$ui_ibd_interpretation <- renderUI({
@@ -586,9 +561,19 @@ server_isolation_by_distance <- function(id, rv) {
         if (!is.na(n)) sprintf(" (%d rows)", n) else "")
     }
     output$ibd_ext_file_status <- renderUI(.file_status_ui(input$ibd_ext_file, full_pair_table_external_r))
-    output$ibd_dgeo_file_status <- renderUI({
-      .file_status_ui(input$ibd_dgeo_file,
-        reactive(.mt_read_file(input$ibd_dgeo_file, input$ibd_dgeo_sep, input$ibd_dgeo_header)))
+    output$ibd_ext_dgeo_warning <- renderUI({
+      shiny::req(input$ibd_ext_file)
+      df <- tryCatch(full_pair_table_external_r(), error = function(e) NULL)
+      if (is.null(df)) return(NULL)
+      has_dgeo <- ("Dgeo_m" %in% names(df) && any(is.finite(df$Dgeo_m))) ||
+                  ("lnDgeo" %in% names(df) && any(is.finite(df$lnDgeo)))
+      if (!has_dgeo) {
+        tags$p(style="color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:4px;padding:4px 6px;font-size:11px;margin-top:6px;",
+          icon("exclamation-triangle"), " No usable ", tags$code("Dgeo_m"), " or ", tags$code("lnDgeo"),
+          " column found in this file (and/or no GPS coordinates) \u2014 the geographic distance dropdown below ",
+          "may have nothing suitable to select. Add one of these columns to your file, or use the ",
+          "\u201cNull Alleles module\u201d data source instead, which computes D_geo automatically from GPS.")
+      }
     })
     output$mt_file_status <- renderUI({
       .file_status_ui(input$mt_file, reactive(.mt_read_file(input$mt_file, input$mt_sep, input$mt_header)))
@@ -623,19 +608,6 @@ server_isolation_by_distance <- function(id, rv) {
                   selected = .guess_col(cols, c("^Pop2$"), cols[min(2L, length(cols))]))
     })
 
-    # The 2D isolation-by-distance habitat model (Rousset 1997) regresses
-    # genetic distance on ln(geographic distance), not raw distance.
-    .raw_dist_warning <- function(xcol, log_checked) {
-      looks_raw <- !is.null(xcol) && nzchar(xcol) &&
-        grepl("dgeo|dist", xcol, ignore.case = TRUE) && !grepl("ln|log", xcol, ignore.case = TRUE)
-      if (looks_raw && !isTRUE(log_checked)) {
-        tags$p(style="color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:4px;padding:4px 6px;font-size:11px;margin-top:6px;",
-          icon("exclamation-triangle"), " ", tags$strong(xcol), " looks raw (un-logged). Tick \"ln(transform) X\" ",
-          "or pick an already-logged column such as ", tags$code("lnDgeo"), " for the 2D habitat model.")
-      }
-    }
-    output$mt_double_log_warning <- renderUI(.raw_dist_warning(input$mt_col_x, input$mt_log_x))
-
     output$mt_col_x_ui <- renderUI({
       df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
@@ -646,6 +618,42 @@ server_isolation_by_distance <- function(id, rv) {
       df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
       cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
       selectInput(session$ns("mt_col_y"), "Y column:", choices = cols,
+                  selected = .guess_col(cols, c("^FR$", "^FR_raw$", "FST_ENA", "DCSE_INA"),
+                                        if (length(cols) >= 2L) cols[2] else NULL))
+    })
+
+    # Geo-distance-looking numeric columns (raw or already-logged); falls
+    # back to ALL numeric columns if none look like a distance, so the
+    # dropdown for Rousset's 1D/2D is never left empty.
+    .mt_geo_cols <- function(df) {
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      geo <- cols[grepl("dgeo|dist", cols, ignore.case = TRUE)]
+      if (length(geo)) geo else cols
+    }
+
+    output$mt_col_x_1d_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- .mt_geo_cols(df)
+      selectInput(session$ns("mt_col_x_1d"), "X column (D_geo):", choices = cols,
+                  selected = .guess_col(cols, c("^Dgeo_m$", "^Dgeo$", "^D_geo$"), if (length(cols)) cols[1] else NULL))
+    })
+    output$mt_col_y_1d_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      selectInput(session$ns("mt_col_y_1d"), "Y column (FST/(1-FST)):", choices = cols,
+                  selected = .guess_col(cols, c("^FR$", "^FR_raw$", "FST_ENA", "DCSE_INA"),
+                                        if (length(cols) >= 2L) cols[2] else NULL))
+    })
+    output$mt_col_x_2d_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- .mt_geo_cols(df)
+      selectInput(session$ns("mt_col_x_2d"), "X column (ln(D_geo)):", choices = cols,
+                  selected = .guess_col(cols, c("^lnDgeo$", "ln.*Dgeo", "^Dgeo_m$", "^Dgeo$"), if (length(cols)) cols[1] else NULL))
+    })
+    output$mt_col_y_2d_ui <- renderUI({
+      df <- tryCatch(mt_base_df_r(), error = function(e) NULL)
+      cols <- if (is.null(df)) character(0) else names(df)[sapply(df, is.numeric)]
+      selectInput(session$ns("mt_col_y_2d"), "Y column (FST/(1-FST)):", choices = cols,
                   selected = .guess_col(cols, c("^FR$", "^FR_raw$", "FST_ENA", "DCSE_INA"),
                                         if (length(cols) >= 2L) cols[2] else NULL))
     })
@@ -667,16 +675,47 @@ server_isolation_by_distance <- function(id, rv) {
       mr
     }
 
+    # Definition of each selectable statistic: which underlying test it maps
+    # to (calc), and whether the ln-transform of X is forced (TRUE/FALSE) or
+    # left to the "ln(transform) X" checkbox (NA).
+    .mt_stat_defs <- list(
+      r         = list(label = "Pearson r",    calc = "r",        force_log = NA),
+      spearman  = list(label = "Spearman rho", calc = "spearman", force_log = NA),
+      rousset1d = list(label = "Rousset's 1D", calc = "b",        force_log = FALSE),
+      rousset2d = list(label = "Rousset's 2D", calc = "b",        force_log = TRUE)
+    )
+
     mantel_result_r <- eventReactive(input$run_mantel, {
       df <- mt_base_df_r()
-      shiny::req(input$mt_col_pop1, input$mt_col_pop2, input$mt_col_x, input$mt_col_y)
-      p1c <- input$mt_col_pop1; p2c <- input$mt_col_pop2; xcol <- input$mt_col_x; ycol <- input$mt_col_y
+      p1c <- input$mt_col_pop1; p2c <- input$mt_col_pop2
+      shiny::req(p1c, p2c)
 
       shiny::validate(
-        shiny::need(all(c(p1c, p2c, xcol, ycol) %in% names(df)), "Selected columns not found."),
+        shiny::need(all(c(p1c, p2c) %in% names(df)), "Selected columns not found."),
         shiny::need(p1c != p2c, "Population 1 and 2 must differ."),
-        shiny::need(xcol != ycol, "X and Y must differ.")
+        shiny::need(length(input$mt_stats) >= 1L, "Select at least one statistic.")
       )
+
+      # Which X/Y column pair each statistic uses: Pearson r and Spearman
+      # rho share one pair; Rousset's 1D and Rousset's 2D each have their
+      # own dedicated pair (matching the reference layout).
+      col_for <- function(skey) {
+        switch(skey,
+          r         = list(x = input$mt_col_x,    y = input$mt_col_y),
+          spearman  = list(x = input$mt_col_x,    y = input$mt_col_y),
+          rousset1d = list(x = input$mt_col_x_1d, y = input$mt_col_y_1d),
+          rousset2d = list(x = input$mt_col_x_2d, y = input$mt_col_y_2d)
+        )
+      }
+      for (skey in input$mt_stats) {
+        cg <- col_for(skey)
+        shiny::validate(
+          shiny::need(!is.null(cg$x) && nzchar(cg$x) && !is.null(cg$y) && nzchar(cg$y),
+                      sprintf("Pick X and Y columns for %s.", .mt_stat_defs[[skey]]$label)),
+          shiny::need(all(c(cg$x, cg$y) %in% names(df)), "Selected columns not found."),
+          shiny::need(cg$x != cg$y, sprintf("X and Y must differ for %s.", .mt_stat_defs[[skey]]$label))
+        )
+      }
 
       if (nzchar(trimws(input$mt_exclude %||% ""))) {
         excl <- trimws(strsplit(input$mt_exclude, ",")[[1L]]); excl <- excl[nzchar(excl)]
@@ -690,134 +729,197 @@ server_isolation_by_distance <- function(id, rv) {
         }
       }
 
-      x <- suppressWarnings(as.numeric(df[[xcol]]))
-      y <- suppressWarnings(as.numeric(df[[ycol]]))
-      stat <- input$mt_stat
-      # Rousset's 1D/2D fix the ln-transform automatically (1D = raw X,
-      # 2D = ln(X)); for Pearson/Spearman the checkbox applies as usual.
-      use_log <- if (stat %in% c("rousset1d", "rousset2d")) identical(stat, "rousset2d") else isTRUE(input$mt_log_x)
-      if (use_log) x <- ifelse(x > 0, log(x), NA_real_)
-      # Both Rousset options compute the same underlying statistic (the
-      # regression slope) — only the X pre-processing above differs.
-      calc_stat <- if (stat %in% c("rousset1d", "rousset2d")) "b" else stat
-
       all_labels <- sort(unique(trimws(c(as.character(df[[p1c]]), as.character(df[[p2c]])))))
-      tmp <- data.frame(P1 = trimws(as.character(df[[p1c]])), P2 = trimws(as.character(df[[p2c]])), X = x, Y = y)
-      m_x <- .mt_build_square(tmp, "P1", "P2", "X", all_labels)
-      m_y <- .mt_build_square(tmp, "P1", "P2", "Y", all_labels)
+      p1v <- trimws(as.character(df[[p1c]])); p2v <- trimws(as.character(df[[p2c]]))
 
       n_perm <- as.integer(input$mt_n_perm)
       p_formula <- input$mt_p_formula %||% "plus1"
       seed <- 67144630L  # fixed internal seed, not exposed to the user
 
-      # Always attempts the native C++ engine first (fast); if it errors for
-      # any reason, silently falls back to the pure-R engine (same statistic,
-      # same p-value formula) so the user always gets a result. Which C++
-      # engine runs depends on the chosen p-value formula: mantel_plus1_cpp
-      # for (b+1)/(m+1), mantel_genepop_cpp for the plain b/m proportion.
-      res <- tryCatch({
-        mx_eng <- if (identical(calc_stat, "spearman")) .rank_matrix(m_x) else m_x
-        my_eng <- if (identical(calc_stat, "spearman")) .rank_matrix(m_y) else m_y
-        set.seed(seed)
-        withProgress(message = "Running Mantel test\u2026", value = 0.3, {
-          cpp_res <- if (identical(p_formula, "plain"))
-            mantel_genepop_cpp(mx_eng, my_eng, n_perm, as.double(seed))
-          else
-            mantel_plus1_cpp(mx_eng, my_eng, n_perm)
-          setProgress(1.0)
+      # Recover BOTH the linear (raw-distance) and log-distance scale of a
+      # distance-like column, from whichever one was actually picked, so
+      # every statistic operates on the correct, consistent scale no matter
+      # which one was selected:
+      #   - if the picked column already looks log-transformed (name
+      #     contains "ln"/"log"), its values ARE the log scale, and the
+      #     linear scale is recovered via exp() (log is invertible);
+      #   - otherwise the picked column IS the linear scale, and the log
+      #     scale is derived via log().
+      # Without this, picking "lnDgeo" vs "Dgeo_m" as X used to give
+      # different (wrong) results for Rousset's 1D/2D — 1D silently tested
+      # log-distance when lnDgeo was picked, and 2D double-logged it. Kept
+      # as its own function so each statistic group (which may now use a
+      # different X column) applies it identically and correctly.
+      derive_scales <- function(xcol) {
+        x_raw <- suppressWarnings(as.numeric(df[[xcol]]))
+        looks_already_log <- nzchar(xcol) && grepl("ln|log", xcol, ignore.case = TRUE)
+        looks_geo_dist    <- nzchar(xcol) && grepl("dgeo|dist", xcol, ignore.case = TRUE)
+        if (looks_already_log) {
+          x_log <- x_raw
+          x_lin <- ifelse(is.finite(x_raw), exp(x_raw), NA_real_)
+        } else {
+          x_lin <- x_raw
+          x_log <- ifelse(is.finite(x_raw) & x_raw > 0, log(x_raw), NA_real_)
+        }
+        list(x_lin = x_lin, x_log = x_log,
+             looks_already_log = looks_already_log, looks_geo_dist = looks_geo_dist)
+      }
+
+      run_one <- function(skey) {
+        def  <- .mt_stat_defs[[skey]]
+        cg   <- col_for(skey)
+        xcol <- cg$x; ycol <- cg$y
+
+        y  <- suppressWarnings(as.numeric(df[[ycol]]))
+        sc <- derive_scales(xcol)
+        # Pearson r / Spearman rho: a geographic-distance-looking column
+        # (raw or already-logged) is tested on the log scale automatically,
+        # behind the scenes, matching the conventional 2D isolation-by-
+        # distance model; any other (non-distance) column is used as-is.
+        # Rousset's 1D/2D force raw/ln(X) regardless of this.
+        base_log  <- sc$looks_geo_dist
+        use_log   <- if (!is.na(def$force_log)) def$force_log else base_log
+        calc_stat <- def$calc
+
+        m_y <- .mt_build_square(data.frame(P1 = p1v, P2 = p2v, X = y), "P1", "P2", "X", all_labels)
+        xv  <- if (use_log) sc$x_log else sc$x_lin
+        m_x <- .mt_build_square(data.frame(P1 = p1v, P2 = p2v, X = xv), "P1", "P2", "X", all_labels)
+
+        res <- tryCatch({
+          mx_eng <- if (identical(calc_stat, "spearman")) .rank_matrix(m_x) else m_x
+          my_eng <- if (identical(calc_stat, "spearman")) .rank_matrix(m_y) else m_y
+          set.seed(seed)
+          withProgress(message = paste0("Running Mantel test (", def$label, ")\u2026"), value = 0.3, {
+            cpp_res <- if (identical(p_formula, "plain"))
+              mantel_genepop_cpp(mx_eng, my_eng, n_perm, as.double(seed))
+            else
+              mantel_plus1_cpp(mx_eng, my_eng, n_perm)
+            setProgress(1.0)
+          })
+          n <- nrow(m_x)
+          lower_idx <- which(lower.tri(matrix(TRUE, n, n)))
+          x_all <- m_x[lower_idx]; y_all <- m_y[lower_idx]
+          ok <- is.finite(x_all) & is.finite(y_all)
+          stat_obs <- if (calc_stat == "b") unname(coef(lm(y_all[ok] ~ x_all[ok]))[2L])
+                      else if (calc_stat == "spearman") suppressWarnings(cor(x_all[ok], y_all[ok], method = "spearman"))
+                      else suppressWarnings(cor(x_all[ok], y_all[ok]))
+          lm0 <- tryCatch(lm(y_all[ok] ~ x_all[ok]), error = function(e) NULL)
+          pair_idx <- which(lower.tri(matrix(TRUE, n, n)), arr.ind = TRUE)
+          list(
+            stat_obs = stat_obs, p_pos = cpp_res$p_pos, p_neg = cpp_res$p_neg,
+            n_pairs = cpp_res$n_pairs,
+            slope = if (!is.null(lm0)) unname(coef(lm0)[2L]) else NA_real_,
+            intercept = if (!is.null(lm0)) unname(coef(lm0)[1L]) else NA_real_,
+            r2 = if (!is.null(lm0)) summary(lm0)$r.squared else NA_real_,
+            x = x_all[ok], y = y_all[ok],
+            pop1 = rownames(m_x)[pair_idx[ok, "row"]], pop2 = rownames(m_x)[pair_idx[ok, "col"]],
+            common = rownames(m_x), perm_stats = as.numeric(cpp_res$perm_stats),
+            engine = "cpp"
+          )
+        }, error = function(e) {
+          set.seed(seed)
+          r <- withProgress(message = paste0("Running Mantel test (", def$label, ")\u2026"), value = 0.2, {
+            rr <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = calc_stat, p_formula = p_formula)
+            setProgress(1.0)
+            rr
+          })
+          r$engine <- "r"
+          r
         })
-        n <- nrow(m_x)
-        lower_idx <- which(lower.tri(matrix(TRUE, n, n)))
-        x_all <- m_x[lower_idx]; y_all <- m_y[lower_idx]
-        ok <- is.finite(x_all) & is.finite(y_all)
-        stat_obs <- if (calc_stat == "b") unname(coef(lm(y_all[ok] ~ x_all[ok]))[2L])
-                    else if (calc_stat == "spearman") suppressWarnings(cor(x_all[ok], y_all[ok], method = "spearman"))
-                    else suppressWarnings(cor(x_all[ok], y_all[ok]))
-        lm0 <- tryCatch(lm(y_all[ok] ~ x_all[ok]), error = function(e) NULL)
-        pair_idx <- which(lower.tri(matrix(TRUE, n, n)), arr.ind = TRUE)
-        list(
-          stat_obs = stat_obs, p_pos = cpp_res$p_pos, p_neg = cpp_res$p_neg,
-          n_pairs = cpp_res$n_pairs,
-          slope = if (!is.null(lm0)) unname(coef(lm0)[2L]) else NA_real_,
-          intercept = if (!is.null(lm0)) unname(coef(lm0)[1L]) else NA_real_,
-          r2 = if (!is.null(lm0)) summary(lm0)$r.squared else NA_real_,
-          x = x_all[ok], y = y_all[ok],
-          pop1 = rownames(m_x)[pair_idx[ok, "row"]], pop2 = rownames(m_x)[pair_idx[ok, "col"]],
-          common = rownames(m_x), perm_stats = as.numeric(cpp_res$perm_stats),
-          engine = "cpp"
-        )
-      }, error = function(e) {
-        set.seed(seed)
-        r <- withProgress(message = "Running Mantel test\u2026", value = 0.2, {
-          rr <- .mt_mantel_matrix(m_x, m_y, n_perm = n_perm, stat = calc_stat, p_formula = p_formula)
-          setProgress(1.0)
-          rr
-        })
-        r$engine <- "r"
-        r
-      })
-      res$x_label <- paste0(xcol, if (use_log) " (ln)" else "")
-      res$y_label <- ycol
-      res$stat_label <- switch(stat, rousset1d = "Rousset's 1D", rousset2d = "Rousset's 2D",
-                                spearman = "Spearman rho", "Pearson r")
-      res$p_formula <- p_formula
-      res
+        res$key   <- skey
+        res$label <- def$label
+        res$use_log <- use_log
+        x_base_name <- if (sc$looks_already_log) sub("^ln|^log", "", xcol, ignore.case = TRUE) else xcol
+        res$x_label <- paste0(x_base_name, if (use_log) " (ln)" else "")
+        res$y_label <- ycol
+        res
+      }
+
+      stats_res <- lapply(input$mt_stats, run_one)
+      names(stats_res) <- input$mt_stats
+
+      list(n_perm = n_perm, p_formula = p_formula,
+           selected = input$mt_stats, stats = stats_res)
     })
+
+    # R² is reported once, from the statistic that best represents a "base"
+    # linear fit: the first Rousset stat if any is selected (since that's
+    # the one an IBD regression R² conventionally refers to), otherwise the
+    # first selected statistic.
+    .mantel_r2_stat <- function(r) {
+      pref <- intersect(c("rousset2d", "rousset1d", "r", "spearman"), r$selected)
+      r$stats[[pref[1]]]
+    }
 
     output$ui_mantel_key_values <- renderUI({
       r <- mantel_result_r()
-      pv <- r$p_pos
-      r2 <- r$r2
       fmt_lbl <- if (identical(r$p_formula, "plain")) "b/m" else "(b+1)/(m+1)"
-      tags$div(style = "display:flex; flex-wrap:wrap; gap:28px; padding:6px 0 14px 0; font-size:14px; color:#333;",
-        tags$div(tags$strong(r$stat_label, style="color:#555;"), tags$br(),
-                 tags$span(round(r$stat_obs, 4), style="font-size:18px;font-weight:700;")),
-        tags$div(tags$strong(paste0("p-value (", fmt_lbl, ")"), style="color:#555;"), tags$br(),
-                 tags$span(if (is.na(pv)) "NA" else formatC(pv, format = "f", digits = 4), style="font-size:18px;font-weight:700;")),
-        tags$div(tags$strong("Pairs used", style="color:#555;"), tags$br(),
-                 tags$span(r$n_pairs, style="font-size:18px;font-weight:700;")),
-        tags$div(tags$strong("Variance explained (R\u00b2)", style="color:#555;"), tags$br(),
-                 tags$span(if (is.na(r2)) "NA" else paste0(round(r2 * 100, 1), "%"), style="font-size:18px;font-weight:700;"))
+      ref <- .mantel_r2_stat(r)
+      rows <- lapply(r$selected, function(k) {
+        s <- r$stats[[k]]
+        tags$tr(
+          tags$td(tags$strong(s$label), style="padding:4px 18px 4px 0;"),
+          tags$td(sprintf("X: %s, Y: %s", s$x_label, s$y_label), style="padding:4px 18px 4px 0;color:#777;font-size:12px;"),
+          tags$td(.fmt_stat(s$stat_obs), style="padding:4px 18px 4px 0;font-weight:700;"),
+          tags$td(sprintf("p(+) = %s", if (is.na(s$p_pos)) "NA" else formatC(s$p_pos, format="f", digits=4)),
+                  style="padding:4px 18px 4px 0;color:#555;"),
+          tags$td(sprintf("p(\u2212) = %s", if (is.na(s$p_neg)) "NA" else formatC(s$p_neg, format="f", digits=4)),
+                  style="padding:4px 0;color:#555;")
+        )
+      })
+      tags$div(
+        tags$div(style = "font-size:13px; color:#333; margin-bottom:10px;",
+          tags$div(tags$strong("m (permutations): "), r$n_perm),
+          tags$div(tags$strong("R\u00b2: "), if (is.na(ref$r2)) "NA" else sprintf("%.4f", ref$r2)),
+          tags$div(tags$strong("p-value formula: "), fmt_lbl)
+        ),
+        tags$table(style = "border-collapse:collapse;font-size:14px;", tags$tbody(rows))
       )
     })
 
     output$ui_mantel_summary <- renderUI({
       r <- mantel_result_r()
       tags$div(style = "margin-top:8px; font-family:monospace; font-size:12px; color:#555;",
-        sprintf("Engine: %s \u2014 Slope = %.6f, Intercept = %.6f",
-                if (identical(r$engine, "cpp")) "C++ (native)" else "R (portable fallback)",
-                r$slope, r$intercept), tags$br(),
-        sprintf("One-sided p (positive association) = %s",
-                if (is.na(r$p_pos)) "NA" else formatC(r$p_pos, format = "f", digits = 4)), tags$br(),
-        sprintf("One-sided p (negative association) = %s",
-                if (is.na(r$p_neg)) "NA" else formatC(r$p_neg, format = "f", digits = 4)), tags$br(),
-        sprintf("Common populations: %d", length(r$common))
+        lapply(r$selected, function(k) {
+          s <- r$stats[[k]]
+          tags$div(
+            sprintf("[%s] Engine: %s \u2014 Slope = %.6f, Intercept = %.6f \u2014 Pairs used: %d \u2014 Common pops: %d",
+                    s$label, if (identical(s$engine, "cpp")) "C++ (native)" else "R (fallback)",
+                    s$slope, s$intercept, s$n_pairs, length(s$common)),
+            tags$br()
+          )
+        })
       )
     })
 
     .mantel_summary_df <- function(r) {
-      data.frame(
-        Quantity = c("Engine", "X variable", "Y variable", "Statistic", "Observed value",
-                     "Slope b (Y ~ X)", "Intercept", "R\u00b2",
-                     "p-value formula",
-                     "p (one-sided, positive assoc.)", "p (one-sided, negative assoc.)",
-                     "Pairs used (n)", "Common populations (N)", "Permutations"),
-        Value = c(if (identical(r$engine, "cpp")) "C++ (native)" else "R (portable)",
-                  r$x_label, r$y_label, r$stat_label, .fmt_stat(r$stat_obs),
-                  .fmt_stat(r$slope), .fmt_stat(r$intercept),
-                  sprintf("%.4f", r$r2),
-                  if (identical(r$p_formula, "plain")) "b/m \u2014 plain proportion" else "(b+1)/(m+1) \u2014 corrected proportion",
-                  if (is.na(r$p_pos)) "NA" else sprintf("%.4f", r$p_pos),
-                  if (is.na(r$p_neg)) "NA" else sprintf("%.4f", r$p_neg),
-                  r$n_pairs, length(r$common), length(r$perm_stats)),
-        stringsAsFactors = FALSE
-      )
+      do.call(rbind, lapply(r$selected, function(k) {
+        s <- r$stats[[k]]
+        data.frame(
+          Statistic = s$label,
+          Engine = if (identical(s$engine, "cpp")) "C++ (native)" else "R (portable)",
+          X_variable = s$x_label,
+          Y_variable = s$y_label,
+          Observed_value = .fmt_stat(s$stat_obs),
+          Slope_b = .fmt_stat(s$slope),
+          Intercept = .fmt_stat(s$intercept),
+          R2 = sprintf("%.4f", s$r2),
+          p_value_formula = if (identical(r$p_formula, "plain")) "b/m" else "(b+1)/(m+1)",
+          p_positive = if (is.na(s$p_pos)) "NA" else sprintf("%.4f", s$p_pos),
+          p_negative = if (is.na(s$p_neg)) "NA" else sprintf("%.4f", s$p_neg),
+          Pairs_used = s$n_pairs,
+          Common_populations = length(s$common),
+          Permutations = length(s$perm_stats),
+          stringsAsFactors = FALSE, check.names = FALSE
+        )
+      }))
     }
 
     output$dt_mantel_summary <- DT::renderDT({
       d <- .mantel_summary_df(mantel_result_r())
+      names(d) <- gsub("_", " ", names(d))
       DT::datatable(d, rownames = FALSE,
-        options = list(dom = "t", pageLength = nrow(d), ordering = FALSE),
+        options = list(dom = "t", pageLength = nrow(d), ordering = FALSE, scrollX = TRUE),
         class = "compact stripe hover")
     })
 
@@ -831,17 +933,18 @@ server_isolation_by_distance <- function(id, rv) {
 
     output$dt_mantel_quantiles <- DT::renderDT({
       r <- mantel_result_r()
-      shiny::req(length(r$perm_stats) > 0L)
       probs <- c(0.005, 0.01, 0.025, 0.05, 0.10, 0.50, 0.90, 0.95, 0.975, 0.99, 0.995)
-      q <- stats::quantile(r$perm_stats, probs = probs, na.rm = TRUE, type = 7)
-      d <- data.frame(
-        Percentile = paste0(probs * 100, "%"),
-        `Null value` = vapply(unname(q), .fmt_stat, character(1L)),
-        check.names = FALSE, stringsAsFactors = FALSE
-      )
-      d <- rbind(d, data.frame(Percentile = "OBSERVED", `Null value` = .fmt_stat(r$stat_obs), check.names = FALSE))
+      cols <- lapply(r$selected, function(k) {
+        s <- r$stats[[k]]
+        if (length(s$perm_stats) == 0L) return(rep(NA_character_, length(probs) + 1L))
+        q <- stats::quantile(s$perm_stats, probs = probs, na.rm = TRUE, type = 7)
+        c(vapply(unname(q), .fmt_stat, character(1L)), .fmt_stat(s$stat_obs))
+      })
+      names(cols) <- vapply(r$selected, function(k) r$stats[[k]]$label, character(1L))
+      d <- data.frame(Percentile = c(paste0(probs * 100, "%"), "OBSERVED"),
+                       cols, check.names = FALSE, stringsAsFactors = FALSE)
       DT::datatable(d, rownames = FALSE,
-        options = list(dom = "t", pageLength = nrow(d), ordering = FALSE),
+        options = list(dom = "t", pageLength = nrow(d), ordering = FALSE, scrollX = TRUE),
         class = "compact stripe hover") |>
         DT::formatStyle("Percentile", target = "row",
           backgroundColor = DT::styleEqual("OBSERVED", "#fef3c7"),
@@ -850,8 +953,9 @@ server_isolation_by_distance <- function(id, rv) {
 
     output$dt_mantel_data <- DT::renderDT({
       r <- mantel_result_r()
-      df <- data.frame(Pop1 = r$pop1, Pop2 = r$pop2, X = round(r$x, 6), Y = round(r$y, 6))
-      names(df)[3:4] <- c(r$x_label, r$y_label)
+      ref <- .mantel_r2_stat(r)
+      df <- data.frame(Pop1 = ref$pop1, Pop2 = ref$pop2, X = round(ref$x, 6), Y = round(ref$y, 6))
+      names(df)[3:4] <- c(ref$x_label, ref$y_label)
       DT::datatable(df, rownames = FALSE,
         options = list(scrollX = TRUE, pageLength = 10, dom = "lrtip"),
         class = "compact stripe hover")
@@ -862,23 +966,28 @@ server_isolation_by_distance <- function(id, rv) {
       content  = function(file) {
         r <- mantel_result_r()
         d_summary <- .mantel_summary_df(r)
+
         probs <- c(0.005, 0.01, 0.025, 0.05, 0.10, 0.50, 0.90, 0.95, 0.975, 0.99, 0.995)
-        q <- stats::quantile(r$perm_stats, probs = probs, na.rm = TRUE, type = 7)
-        d_quant <- data.frame(
-          Percentile = paste0(probs * 100, "%"),
-          Null_value = vapply(unname(q), .fmt_stat, character(1L)),
-          stringsAsFactors = FALSE
-        )
-        d_quant <- rbind(d_quant, data.frame(Percentile = "OBSERVED", Null_value = .fmt_stat(r$stat_obs)))
-        d_data <- data.frame(Pop1 = r$pop1, Pop2 = r$pop2, X = round(r$x, 6), Y = round(r$y, 6))
-        names(d_data)[3:4] <- c(r$x_label, r$y_label)
+        cols <- lapply(r$selected, function(k) {
+          s <- r$stats[[k]]
+          if (length(s$perm_stats) == 0L) return(rep(NA_character_, length(probs) + 1L))
+          q <- stats::quantile(s$perm_stats, probs = probs, na.rm = TRUE, type = 7)
+          c(vapply(unname(q), .fmt_stat, character(1L)), .fmt_stat(s$stat_obs))
+        })
+        names(cols) <- vapply(r$selected, function(k) r$stats[[k]]$label, character(1L))
+        d_quant <- data.frame(Percentile = c(paste0(probs * 100, "%"), "OBSERVED"),
+                               cols, check.names = FALSE, stringsAsFactors = FALSE)
+
+        ref <- .mantel_r2_stat(r)
+        d_data <- data.frame(Pop1 = ref$pop1, Pop2 = ref$pop2, X = round(ref$x, 6), Y = round(ref$y, 6))
+        names(d_data)[3:4] <- c(ref$x_label, ref$y_label)
 
         con <- file(file, open = "w", encoding = "UTF-8"); on.exit(close(con))
         writeLines(c("Mantel test results", ""), con = con, useBytes = TRUE)
-        writeLines("Summary:", con = con)
+        writeLines("Summary (one row per selected statistic):", con = con)
         write.table(d_summary, file = con, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE)
         writeLines("", con = con)
-        writeLines("Null distribution quantiles:", con = con)
+        writeLines("Null distribution quantiles (one column per selected statistic):", con = con)
         write.table(d_quant, file = con, sep = "\t", row.names = FALSE, quote = FALSE, append = TRUE)
         writeLines("", con = con)
         writeLines("Data used:", con = con)

@@ -334,38 +334,6 @@ server_general_stats <- function(id, rv) {
       mat
     })
 
-    # ── Subsample pairs template for Isolation by Distance ─────────────────
-    # One row per unique pair of subsamples currently loaded, with an empty
-    # Distance column the operator can fill in (or overwrite) by hand, and
-    # unwanted rows deleted, before loading the file back into the
-    # Isolation by Distance module (external pairs/distances file).
-    output$download_pairs_template <- downloadHandler(
-      filename = function() paste0("subsample_pairs_template_", Sys.Date(), ".csv"),
-      content = function(file) {
-        mat <- hf_mat_r()
-        pop_names <- as.character(attr(mat, "pop_levels"))
-        shiny::validate(shiny::need(length(pop_names) >= 2L,
-                                     "Need at least 2 subsamples to build a pairs template."))
-        pairs <- utils::combn(pop_names, 2L)
-        df <- data.frame(
-          Pop1     = pairs[1, ],
-          Pop2     = pairs[2, ],
-          Distance = NA_real_,
-          stringsAsFactors = FALSE
-        )
-        header <- spg_export_header(
-          title           = "Subsample pairs template for Isolation by Distance",
-          dataset_name    = if (!is.null(rv$dataset_filename)) rv$dataset_filename else NULL,
-          subsamples      = pop_names,
-          resampling_unit = NULL,
-          extra           = list(
-            "How to use" = "Fill in (or overwrite) the Distance column with your own values (geographic, temporal, ecological...), delete any pairs you don't want, then load this file in the Isolation by Distance module (external pairs/distances file) or its Mantel test tab."
-          )
-        )
-        spg_write_csv_with_header(df, file, header)
-      }
-    )
-
     # ── Ordre physique des loci depuis DuckDB (MIN(rowid)) ──────────────────
     # Même logique que locus_order_cte() dans server_allele_frequencies
     loci_order_r <- reactive({

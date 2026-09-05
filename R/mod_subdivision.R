@@ -30,24 +30,6 @@ mod_subdivision_ui <- function(id) {
     #   ))
     # ),
 
-    fluidRow(
-      box(
-        width = 12, solidHeader = TRUE, status = "primary",
-        title = div(style = "background-color: #FFFFFF; padding: 10px; color: #333a43; font-weight: 600;",
-                    icon("route"), "Subsample pairs \u2014 template for Isolation by Distance"),
-        # tags$p(
-        #   "Generates one row per pair of subsamples (populations) currently loaded, ",
-        #   "with an empty Distance column. Open the file in a spreadsheet or text editor, ",
-        #   "delete any pairs you don't want to use, fill in (or overwrite) the Distance column ",
-        #   "with your own values, and load it back in the ",
-        #   tags$b("Isolation by Distance"), " module (tab \"Isolation by Distance\", option ",
-        #   tags$em("\"External pairs/distances file\""), "), or in its Mantel test tab."
-        # ),
-        downloadButton(ns("download_pairs_template"), "Download subsample pairs template (.csv)",
-                        class = "btn-download-secondary")
-      )
-    ),
-
     # ==========================================================#
     # SECTION 1 — FST : Bootstrap CI + permutation
     # ==========================================================#

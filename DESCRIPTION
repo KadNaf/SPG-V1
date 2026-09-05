@@ -60,7 +60,8 @@ Imports:
     htmlwidgets,
     webshot2,
     plotly,
-    magrittr
+    magrittr,
+    zip
 LinkingTo:
     Rcpp
 VignetteBuilder: knitr

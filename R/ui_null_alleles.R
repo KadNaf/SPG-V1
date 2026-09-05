@@ -121,80 +121,89 @@ null_alleles_UI <- function(id) {
         title = div(style = box_title_style, icon("sliders"), "Setup"),
         solidHeader = TRUE, status = "primary",
 
+        # h4(icon("code-branch"), "(1) Missing genotype coding per locus"),
+        # tags$div(class = "na-warn",
+        #   tags$p(style = "margin:.25rem 0;",
+        #     "Please choose how to code missing data for each locus:", tags$br(),
+        #     tags$strong("0"), " = true missing data (ignored by the algorithm);", tags$br(),
+        #     tags$strong("999999"), " = homozygote for allele 999 (code for all null alleles)"),
+        #   tags$p(style = "margin:.5rem 0 0;font-weight:600;",
+        #     "Please make sure you do not already have any allele coded as 999.")
+        # ),
+
         h4(icon("code-branch"), "(1) Missing genotype coding per locus"),
         tags$div(class = "na-warn",
           tags$p(style = "margin:.25rem 0;",
-            "Please choose how to code missing data for each locus:", tags$br(),
-            tags$strong("0"), " = true missing data (ignored by the algorithm);", tags$br(),
-            tags$strong("999999"), " = homozygote for allele 999 (code for all null alleles)"),
-          tags$p(style = "margin:.5rem 0 0;font-weight:600;",
-            "Please make sure you do not already have any allele coded as 999.")
+            "Choose the missing data code for each locus: ",
+            tags$strong("0"), " = true missing (ignored); ",
+            tags$strong("999999"), " = homozygote for allele 999 (null alleles)."
+          ),
+          tags$p(
+            style = "margin:.25rem 0 0;font-weight:600;",
+            "Ensure allele 999 is not already present in your dataset."
+          )
         ),
+
         uiOutput(ns("locus_coding_ui")),
 
         tags$hr(),
 
         h4(icon("dice"), "(2) Bootstrap parameters"),
         p("Bootstrap over subsamples (for 5 subsamples at least) and over loci (for 5 loci at least)"),
-        tags$div(style = "max-width:250px;",
-          numericInput(ns("nboot"),
-            label = "Number of bootstraps over loci (for all analyses) (at least 100):",
-            value = 5000, min = 100, max = 99999, step = 1000, width = "100%"),
-          numericInput(ns("nboot_subs"),
-            label = "Number of bootstraps over subsamples (for over all FST's) (at least 100):",
-            value = 5000, min = 100, max = 99999, step = 1000, width = "100%"),
-          numericInput(ns("alpha"),
-            label = "Critical level for confidence intervals (between 0.9999 and 0.0001):",
-            value = 0.05, min = 0.0001, max = 0.5, step = 0.01, width = "100%"),
-          numericInput(ns("boot_seed"),
-            label = "Random seed (reproducibility):",
-            value = 12345, min = 1, max = 2147483647, step = 1, width = "100%")
+        tags$div(style = "display:flex; align-items:flex-start; gap:0; flex-wrap:wrap;",
+          tags$div(style = "flex:1; min-width:190px; padding-right:16px;",
+            numericInput(ns("nboot"),
+              label = "Number of bootstraps over loci (for all analyses) (at least 100):",
+              value = 5000, min = 100, max = 99999, step = 1000, width = "100%")),
+          tags$div(style = "border-left:1px solid #dcdfe4; flex:1; min-width:190px; padding:0 16px;",
+            numericInput(ns("nboot_subs"),
+              label = "Number of bootstraps over subsamples (for over all FST's) (at least 100):",
+              value = 5000, min = 100, max = 99999, step = 1000, width = "100%")),
+          tags$div(style = "border-left:1px solid #dcdfe4; flex:0 0 220px; padding:0 16px;",
+            numericInput(ns("alpha"),
+              label = "Critical level for confidence intervals (between 0.9999 and 0.0001):",
+              value = 0.05, min = 0.0001, max = 0.5, step = 0.01, width = "100%")),
+          tags$div(style = "border-left:1px solid #dcdfe4; flex:0 0 200px; padding:0 0 0 16px;",
+            numericInput(ns("boot_seed"),
+              label = "Random seed (reproducibility):",
+              value = 12345, min = 1, max = 1000000, step = 1, width = "100%"))
         ),
-        # tags$p(style = "color:#666;font-size:12px;",
-        #   icon("info-circle"), " ",
-        #   "Bootstrap resampling is random: point estimates (FST, FST-ENA, DCSE\u2026) never change, ",
-        #   "but confidence interval bounds will shift slightly from run to run unless the seed is kept ",
-        #   "the same. Re-run with the same seed, same data and same number of replicates to reproduce ",
-        #   "the exact same confidence intervals \u2014 the seed used is recorded in every exported file."),
 
         tags$hr(),
 
-        h4(icon("save"), "(3) Output files"),
-        fluidRow(
-          column(6,
-            tags$div(style = "display:flex; align-items:flex-end; gap:8px;",
-              tags$div(style = "flex:1;",
-                textInput(ns("out_dir_display"), "Save files to this folder (optional):",
-                          value = "", placeholder = "(not set \u2014 use the .txt buttons below instead)")),
-              shinyFiles::shinyDirButton(ns("out_dir_browse"), "Browse", "Choose output folder",
-                                          class = "btn-action-secondary", style = "margin-bottom:15px;"))),
-          column(6,
-            textInput(ns("out_root"), "Root for the name of output files:",
-                      value = "", placeholder = "auto-filled from the imported data file name"))
+        h4(icon("map-marker-alt"), "GPS coordinates of subsamples"),
+        radioButtons(ns("gps_available"), "Do you have GPS coordinates for your subsamples (decimal degrees)?",
+          choices = c("Yes" = "yes", "No" = "no"), selected = "yes", inline = TRUE),
+        conditionalPanel(
+          condition = sprintf("input['%s'] == 'yes'", ns("gps_available")),
+          fluidRow(
+            column(3, uiOutput(ns("gps_lon_col_ui"))),
+            column(3, uiOutput(ns("gps_lat_col_ui")))
+          ),
+          tags$p(style="color:#777;font-size:11px;",
+            icon("info-circle"), " Auto-detected from your imported data when possible \u2014 change if the ",
+            "wrong columns were picked. Used to compute geographic distances (Vincenty) for the Full pairwise table.")
         ),
-        # tags$p(style = "color:#666;font-size:12px;",
-        #   icon("info-circle"), " ", tags$strong("Browse\u2026"), " opens a folder picker for ",
-        #   tags$strong("this computer"), " (the one running this app). Pick a folder and every file will ",
-        #   "be saved there automatically each time you click Compute \u2014 no need to click the .txt buttons ",
-        #   "one by one. Leave it empty to just use the .txt download buttons below each result instead."),
-        # tags$p(style = "color:#666;font-size:12px;",
-        #   "The root is proposed automatically from the name of the data file you imported ",
-        #   "and you can freely edit or extend it \u2014 e.g. add your own notes such as which loci ",
-        #   "were recoded to 999999. File names = root + description (e.g. ",
-        #   tags$code("<root>null_allele_frequencies.txt"), "). No date is added (already shown by your ",
-        #   "computer's file browser) \u2014 if you re-run with a different missing-data coding and want to ",
-        #   "keep both results, use the suffix field to tell them apart."),
-        # textInput(ns("out_suffix"), "Optional suffix to distinguish this run (e.g. \"1\"):", value = ""),
-        tags$p(style = "color:#666;font-size:12px;",
-          "Files are saved as tab-delimited ", tags$strong(".txt"), " (not .csv)."),
 
         tags$hr(),
 
-        h4(icon("rocket"), "(4) Run all computations + generate output files"),
+        h4(icon("save"), "Choose names for output files"),
+        tags$div(style = "max-width:320px;",
+          textInput(ns("out_root"), NULL, value = "", placeholder = "auto-filled from the imported data file name")),
+        tags$p(style="color:#777;font-size:11px;",
+          "Defaults to the imported dataset's name. Change it and every output file below will use that name instead."),
+
+        tags$hr(),
+
+        h4(icon("rocket"), "(3) Run all computations + generate output files"),
+        checkboxInput(ns("include_pairwise_table"),
+          "Also generate the Full pairwise table (needs GPS Latitude/Longitude at import)",
+          value = TRUE),
+        uiOutput(ns("ui_gps_status")),
         fluidRow(
           column(4,
             actionButton(ns("run_all"),
-              label = tagList(icon("rocket"), tags$strong(" Compute + Bootstrap + Export")),
+              label = tagList(icon("rocket"), tags$strong(" Compute")),
               class = "btn-action-primary btn-block",
               style = "font-weight: bold;"))
         ),
@@ -210,44 +219,53 @@ null_alleles_UI <- function(id) {
     fluidRow(
       box(
         width = 12,
-        title = div(style = box_title_style, icon("file-export"),
-                    "5 files generated by \u201cCompute + Bootstrap + Export\u201d"),
+        title = uiOutput(ns("ui_output_files_title"), inline = TRUE),
         solidHeader = TRUE, status = "primary",
         tags$div(class = "spg-module-card na-filecard", style = "margin-bottom:14px; max-width:400px;",
-          tags$div(class = "card-icon", icon("table")),
+          # tags$div(class = "card-icon", icon("table")),
           h5("p_nulls / locus"),
-          p("Per locus \u00d7 subsample, plus global weighted mean per locus."),
+          p("Null allele frequencies per locus and subsamples, and averaged over subsamples."),
           tags$div(class = "fname", uiOutput(ns("ui_filename_1"), inline = TRUE)),
           uiOutput(ns("ui_dl_file1"))
         ),
         tags$div(class = "spg-module-card na-filecard", style = "margin-bottom:14px; max-width:400px;",
-          tags$div(class = "card-icon", icon("chart-bar")),
+          # tags$div(class = "card-icon", icon("chart-bar")),
           h5("FST / FST-ENA"),
-          p("Per locus + multilocus, CI over loci and over sub-samples."),
+          p("Global FST per locus and over all, corrected or not for null alleles, with CI of bootstrap over subsamples and loci."),
           tags$div(class = "fname", uiOutput(ns("ui_filename_2"), inline = TRUE)),
           uiOutput(ns("ui_dl_file2"))
         ),
         tags$div(class = "spg-module-card na-filecard", style = "margin-bottom:14px; max-width:400px;",
-          tags$div(class = "card-icon", icon("route")),
+          # tags$div(class = "card-icon", icon("route")),
           h5("Pairwise (long format)"),
-          p("FST, FST-ENA, DCSE, DCSE-INA per pair of sub-samples, all loci combined."),
+          p("Table of all genetic distances between all subsample pairs, corrected or not for null alleles, with CI of bootstrap over loci."),
           tags$div(class = "fname", uiOutput(ns("ui_filename_3"), inline = TRUE)),
           uiOutput(ns("ui_dl_file3"))
         ),
         tags$div(class = "spg-module-card na-filecard", style = "margin-bottom:14px; max-width:400px;",
-          tags$div(class = "card-icon", icon("th")),
+          # tags$div(class = "card-icon", icon("th")),
           h5("Per-locus half-matrices"),
-          p("FST, FST-ENA, DCSE, DCSE-INA \u2014 per locus, per pair."),
+          p("Paired genetic distances in half left matrices, for use by other software."),
           tags$div(class = "fname", uiOutput(ns("ui_filename_4"), inline = TRUE)),
           uiOutput(ns("ui_dl_file4"))
         ),
-        tags$div(class = "spg-module-card na-filecard", style = "max-width:400px;",
-          tags$div(class = "card-icon", icon("dice")),
+        tags$div(class = "spg-module-card na-filecard", style = "margin-bottom:14px; max-width:400px;",
+          # tags$div(class = "card-icon", icon("dice")),
           h5("Bootstrap distributions"),
-          p("All bootstrap replicate values (over loci and over sub-samples)."),
+          p("Detailed bootstrap distribution for global FST's."),
           tags$div(class = "fname", uiOutput(ns("ui_filename_5"), inline = TRUE)),
           uiOutput(ns("ui_dl_file5"))
-        )
+        ),
+        tags$div(class = "spg-module-card na-filecard", style = "margin-bottom:14px; max-width:400px;",
+          # tags$div(class = "card-icon", icon("sliders-h")),
+          h5("Run parameters"),
+          p("List of parameters you chose to use."),
+          tags$div(class = "fname", uiOutput(ns("ui_filename_6"), inline = TRUE)),
+          uiOutput(ns("ui_dl_file6"))
+        ),
+        uiOutput(ns("ui_file7_card")),
+        tags$hr(),
+        downloadButton(ns("dl_all_zip"), "Download all files (.zip)", class = "btn-action-primary")
       )
     ),
 
@@ -354,6 +372,13 @@ null_alleles_UI <- function(id) {
             DT::DTOutput(ns("dt_fst_locus")), br(),
             h4(icon("table"), "DCSE and DCSE-INA per locus \u00d7 pair"),
             DT::DTOutput(ns("dt_dc_locus"))
+          ),
+
+          # ── TAB 5: Full pairwise table ──────────────────────────────────── #
+          tabPanel(title = tagList(icon("route"), " Full pairwise table"),
+                   value = "tab_full_pairwise", br(),
+            uiOutput(ns("ui_full_pairwise_note")),
+            DT::DTOutput(ns("dt_full_pairwise"))
           )
         ),
         style = "padding: 10px;"
